@@ -76,7 +76,7 @@ const NAV_MIN_WIDTH: f32 = 152.0;
 const NAV_MAX_WIDTH: f32 = 300.0;
 const NAV_DEFAULT_WIDTH: f32 = 240.0;
 const SIDEBAR_COLLAPSED_WIDTH: f32 = 48.0;
-const FOLLOWED_LIMIT_OPTIONS: [usize; 4] = [5, 8, 12, 20];
+const FOLLOWED_LIMIT_OPTIONS: [usize; 6] = [5, 8, 12, 20, 30, 50];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsTab {
@@ -868,6 +868,7 @@ struct KickShell {
     following_cursor: Option<String>,
     following_has_more: bool,
     following_loading_more: bool,
+    following_pages_loaded: usize,
     following_generation: u64,
     show_all_recommended: bool,
     chat_input_host: Rc<RefCell<ChatInputField>>,
@@ -2143,6 +2144,7 @@ impl KickShell {
             following_cursor: None,
             following_has_more: false,
             following_loading_more: false,
+            following_pages_loaded: 0,
             following_generation: 0,
             show_all_recommended: false,
             chat_input_host: Rc::new(RefCell::new(
@@ -3405,7 +3407,29 @@ impl KickShell {
                     return;
                 }
                 if let Ok(page) = result {
-                    this.followed_channels = page.channels;
+                    if this.following_pages_loaded > 1 {
+                        // Keep the pages already loaded and merge fresh live/viewer
+                        // data from the first page instead of shrinking the sidebar.
+                        for updated in page.channels {
+                            if let Some(existing) = this
+                                .followed_channels
+                                .iter_mut()
+                                .find(|channel| channel.channel_slug == updated.channel_slug)
+                            {
+                                existing.is_live = updated.is_live;
+                                existing.viewer_count = updated.viewer_count;
+                                existing.session_title = updated.session_title;
+                                existing.category_name = updated.category_name;
+                                existing.profile_picture_url = updated.profile_picture_url;
+                            } else {
+                                this.followed_channels.push(updated);
+                            }
+                        }
+                    } else {
+                        this.followed_channels = page.channels;
+                        this.following_cursor = page.next_cursor;
+                        this.following_has_more = this.following_cursor.is_some();
+                    }
                     this.warm_avatar_cache(
                         this.followed_channels
                             .iter()
@@ -3413,9 +3437,8 @@ impl KickShell {
                             .collect(),
                         cx,
                     );
-                    this.following_cursor = page.next_cursor;
-                    this.following_has_more = this.following_cursor.is_some();
                     this.following_state = FollowingState::Ready;
+                    this.ensure_followed_visible(cx);
                     cx.notify();
                 }
             });
@@ -3760,6 +3783,7 @@ impl KickShell {
         self.following_cursor = None;
         self.following_has_more = false;
         self.following_loading_more = false;
+        self.following_pages_loaded = 1;
         let Some(worker) = self.live_worker.as_mut() else {
             self.following_state = FollowingState::Failed(LiveError::WorkerUnavailable);
             return;
@@ -3781,16 +3805,10 @@ impl KickShell {
                                 .collect(),
                             cx,
                         );
-                        this.warm_avatar_cache(
-                            this.followed_channels
-                                .iter()
-                                .filter_map(|channel| channel.profile_picture_url.clone())
-                                .collect(),
-                            cx,
-                        );
                         this.following_cursor = page.next_cursor;
                         this.following_has_more = this.following_cursor.is_some();
                         this.following_state = FollowingState::Ready;
+                        this.ensure_followed_visible(cx);
                     }
                     Err(error) => {
                         this.following_state = FollowingState::Failed(error);
@@ -3817,8 +3835,9 @@ impl KickShell {
         let Some(worker) = self.live_worker.as_mut() else {
             return;
         };
-        let receiver = worker.request_followed_channels(Some(cursor));
+        let receiver = worker.request_followed_channels(Some(cursor.clone()));
         self.following_loading_more = true;
+        self.following_pages_loaded = self.following_pages_loaded.saturating_add(1);
         cx.spawn(async move |this, cx| {
             let result = receiver.await.unwrap_or(Err(LiveError::WorkerUnavailable));
             let _ = this.update(cx, |this, cx| {
@@ -3837,8 +3856,11 @@ impl KickShell {
                             this.followed_channels.push(channel);
                         }
                     }
-                    this.following_cursor = page.next_cursor;
-                    this.following_has_more = this.following_cursor.is_some();
+                    let next = page.next_cursor;
+                    // Stop if the server repeats a cursor instead of advancing.
+                    this.following_has_more = next.is_some() && next != Some(cursor);
+                    this.following_cursor = next;
+                    this.ensure_followed_visible(cx);
                 }
                 cx.notify();
             });
@@ -4192,7 +4214,33 @@ impl KickShell {
         }
         self.followed_limit = limit;
         self.save_current_settings();
+        self.ensure_followed_visible(cx);
         cx.notify();
+    }
+
+    /// Loads further followed pages until the sidebar can fill its configured
+    /// row count, so raising the limit actually shows more channels.
+    fn live_followed_count(&self) -> usize {
+        self.followed_channels
+            .iter()
+            .filter(|channel| channel.is_live)
+            .count()
+    }
+
+    fn ensure_followed_visible(&mut self, cx: &mut Context<Self>) {
+        // The sidebar lists live channels only, so keep paging until enough live
+        // channels are loaded. The page cap bounds requests for users who follow
+        // many offline channels.
+        const MAX_AUTO_PAGES: usize = 12;
+        if !matches!(self.following_state, FollowingState::Ready)
+            || self.live_followed_count() >= self.followed_limit
+            || !self.following_has_more
+            || self.following_loading_more
+            || self.following_pages_loaded >= MAX_AUTO_PAGES
+        {
+            return;
+        }
+        self.load_more_following(cx);
     }
 
     fn set_chat_delay(&mut self, seconds: u64, cx: &mut Context<Self>) {
@@ -7359,7 +7407,11 @@ fn navigation_rail(
             .pt_2()
             .pb_3()
             .overflow_y_scroll();
-        for channel in followed_channels.iter().take(followed_limit.min(8)) {
+        for channel in followed_channels
+            .iter()
+            .filter(|channel| channel.is_live)
+            .take(followed_limit.min(8))
+        {
             avatars = avatars.child(collapsed_rail_avatar(
                 format!("collapsed-followed-{}", channel.channel_slug),
                 channel.channel_name.clone(),
@@ -7404,7 +7456,11 @@ fn navigation_rail(
         .flex_col();
 
     if matches!(account_state, AccountState::SignedIn { .. }) {
-        let show_more = following_has_more || followed_channels.len() > 5;
+        let live_count = followed_channels
+            .iter()
+            .filter(|channel| channel.is_live)
+            .count();
+        let show_more = following_has_more || live_count > 5;
         let mut followed_header = div()
             .px_3()
             .pt_2()
@@ -7468,8 +7524,17 @@ fn navigation_rail(
                     "フォロー中のチャンネルはありません",
                 )));
             }
+            FollowingState::Ready if live_count == 0 => {
+                followed_section = followed_section.child(sidebar_section_status(tr(
+                    "配信中のフォロー中チャンネルはありません",
+                )));
+            }
             _ => {
-                for channel in followed_channels.iter().take(followed_limit) {
+                for channel in followed_channels
+                    .iter()
+                    .filter(|channel| channel.is_live)
+                    .take(followed_limit)
+                {
                     let selected = channel.channel_slug == selected_channel_slug;
                     followed_section = followed_section.child(sidebar_stream_row(
                         channel.to_summary(),
@@ -9017,13 +9082,17 @@ fn settings_page(
                                 5 => "followed-limit-5",
                                 8 => "followed-limit-8",
                                 12 => "followed-limit-12",
-                                _ => "followed-limit-20",
+                                20 => "followed-limit-20",
+                                30 => "followed-limit-30",
+                                _ => "followed-limit-50",
                             };
                             let label = match limit {
                                 5 => "5件",
                                 8 => "8件",
                                 12 => "12件",
-                                _ => "20件",
+                                20 => "20件",
+                                30 => "30件",
+                                _ => "50件",
                             };
                             options = options.child(settings_toggle(
                                 id,
