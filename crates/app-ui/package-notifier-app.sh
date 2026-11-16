@@ -9,7 +9,7 @@ fail() {
     exit 1
 }
 
-source_app=${1:-/private/tmp/KickNative.app}
+source_app=${1:-/private/tmp/Minamo.app}
 output_app=${2:-/private/tmp/KickNativeNotifier.app}
 
 [ -d "$source_app" ] || fail "source app not found: $source_app"
@@ -28,8 +28,8 @@ ditto "$source_app" "$bundle_directory"
 plist="$bundle_directory/Contents/Info.plist"
 
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.codex.kick-native.notifier' "$plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleName Kick Native Notifier' "$plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Kick Native Notifier' "$plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleName Minamo Notifier' "$plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Minamo Notifier' "$plist"
 if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$plist" >/dev/null 2>&1; then
     /usr/libexec/PlistBuddy -c 'Set :LSUIElement true' "$plist"
 else

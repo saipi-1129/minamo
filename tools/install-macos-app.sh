@@ -1,12 +1,12 @@
 #!/bin/sh
-# Installs the latest packaged Kick Native app into /Applications (or
+# Installs the latest packaged Minamo app into /Applications (or
 # KICK_INSTALL_PATH) and relaunches it. The previous bundle is kept under
 # /private/tmp until the new one passes signature verification.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-source_app=${1:-/private/tmp/KickNative.app}
-destination=${KICK_INSTALL_PATH:-/Applications/KickNative.app}
+source_app=${1:-/private/tmp/Minamo.app}
+destination=${KICK_INSTALL_PATH:-/Applications/Minamo.app}
 
 if [ ! -d "$source_app" ]; then
     printf 'source app not found: %s\n' "$source_app" >&2
@@ -14,9 +14,9 @@ if [ ! -d "$source_app" ]; then
     exit 2
 fi
 case "$destination" in
-    /*/KickNative.app) ;;
+    /*/Minamo.app) ;;
     *)
-        printf 'destination must end with /KickNative.app: %s\n' "$destination" >&2
+        printf 'destination must end with /Minamo.app: %s\n' "$destination" >&2
         exit 2
         ;;
 esac
@@ -25,9 +25,9 @@ codesign --verify --deep --strict "$source_app"
 
 # Quit a running copy so the bundle can be replaced. The app's quit menu item
 # is the graceful path; the pkill fallback only matches this bundle name.
-osascript -e 'tell application "Kick Native" to quit' >/dev/null 2>&1 || true
+osascript -e 'tell application "Minamo" to quit' >/dev/null 2>&1 || true
 sleep 1
-pkill -f '/KickNative.app/Contents/MacOS/kick-gpui-poc' >/dev/null 2>&1 || true
+pkill -f '/Minamo.app/Contents/MacOS/kick-gpui-poc' >/dev/null 2>&1 || true
 sleep 1
 
 staging="${destination}.staging.$$"
@@ -44,7 +44,7 @@ ditto "$source_app" "$staging"
 codesign --verify --deep --strict "$staging"
 
 if [ -e "$destination" ]; then
-    backup="/private/tmp/KickNative.previous.$(date +%Y%m%d%H%M%S).app"
+    backup="/private/tmp/Minamo.previous.$(date +%Y%m%d%H%M%S).app"
     mv "$destination" "$backup"
 fi
 mv "$staging" "$destination"

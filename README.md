@@ -2,7 +2,7 @@
 >
 > **非公式** — このアプリは Kick 公式とは関係のない非公式クライアントです。
 
-# Kick Native for macOS
+# Minamo for macOS
 
 A lightweight native macOS client for [Kick](https://kick.com), built with Rust, GPUI, AppKit, and AVFoundation. It does **not** use Electron, Tauri, WKWebView, Chromium, or an embedded web view.
 
@@ -10,7 +10,7 @@ A lightweight native macOS client for [Kick](https://kick.com), built with Rust,
 
 ## Download
 
-Apple Silicon DMG: see the [latest release](https://github.com/saipi-1129/kick-native/releases/latest).
+Apple Silicon DMG: see the [latest release](https://github.com/saipi-1129/minamo/releases/latest).
 
 - macOS 13 or later, Apple Silicon
 - The build is signed for local development but **not notarized**. If macOS blocks it, right-click the app and choose **Open**, or allow it in **System Settings → Privacy & Security**.
@@ -62,6 +62,11 @@ The token is stored in the macOS Keychain. `kick_session` alone does not work. A
 
 - Sign in with the `session_token` value, a full Cookie header, or a JSON cookie export. The session is stored in the macOS Keychain and can be removed from the app.
 
+**Updates**
+
+- Checks GitHub Releases for a newer version and shows it in Settings → App.
+- Downloads the DMG, verifies its code signature and team ID, then installs it after the app quits and relaunches.
+
 ### Not yet supported
 
 - Subscriptions (subscribe, gift a sub, payments)
@@ -76,7 +81,7 @@ The token is stored in the macOS Keychain. `kick_session` alone does not work. A
 - Clip creation
 - Search filters (category, language)
 - Pre-send checks for slow mode and followers-only (the server rejects the send)
-- Auto-update and notarization
+- Notarization
 - Multiple accounts
 
 ### Keyboard and mouse
@@ -129,6 +134,7 @@ The build uses `/private/tmp` for artifacts; the source tree stays clean.
 - Kick's web API and realtime protocol are not a stable public contract and may change without notice.
 - Chat sending uses Kick's web session route (`POST /api/v2/messages/send/{chatroomId}`), which is not a documented public API. A message is sent only when you press Enter or the send button.
 - The DMG is not notarized; Gatekeeper may require a manual Open.
+- The in-app update installs into the current app location, so the app must live in a writable folder such as `/Applications`.
 - Notifications require macOS permission. The background helper must be enabled in Settings and runs only while the user is logged in.
 - This is a personal project and is not affiliated with or endorsed by Kick.
 
@@ -146,7 +152,7 @@ Rust、GPUI、AppKit、AVFoundation で作った Kick のネイティブ macOS �
 
 ### ダウンロード
 
-Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/kick-native/releases/latest) から取得できます。
+Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/minamo/releases/latest) から取得できます。
 
 - macOS 13 以降、Apple Silicon
 - ローカル開発用の署名のみで、**公証（notarization）は未実施**です。起動できない場合はアプリを右クリックして「開く」を選ぶか、システム設定 → プライバシーとセキュリティ で許可してください。
@@ -194,6 +200,11 @@ Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/kic
 
 - `session_token` の値、Cookie ヘッダー、JSON の Cookie エクスポートからログインできます。セッションは macOS の Keychain に保存し、アプリから削除できます。
 
+**アップデート**
+
+- GitHub Releases で新しいバージョンを確認し、設定 → アプリ に表示します。
+- DMG をダウンロードし、コード署名と Team ID を検証してから、アプリ終了後にインストールして再起動します。
+
 ### 未対応の機能
 
 - サブスクリプション（登録・ギフトサブ・支払い）
@@ -208,7 +219,7 @@ Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/kic
 - クリップの作成
 - 検索の絞り込み（カテゴリ・言語）
 - スローモード/フォロワー限定の送信前チェック（送信後にサーバーが拒否）
-- 自動アップデート、公証（notarization）
+- 公証（notarization）
 - 複数アカウントの切り替え
 
 ### キーボードとマウス
@@ -259,6 +270,7 @@ KICK_NATIVE_BUILD_ROOT=/private/tmp/kick-native-build tools/build-macos.sh insta
 - Kick の Web API とリアルタイムプロトコルは安定した公開仕様ではなく、予告なく変更される可能性があります。
 - チャット送信は Kick の Web セッション経路（`POST /api/v2/messages/send/{chatroomId}`）を使用しており、公開 API ではありません。Enter か送信ボタンを押したときだけ送信します。
 - DMG は公証されていないため、Gatekeeper の警告が出る場合があります。
+- アプリ内アップデートは現在のアプリの場所にインストールするため、`/Applications` など書き込み可能な場所に置く必要があります。
 - 通知には macOS の許可が必要です。バックグラウンド通知ヘルパーは設定で有効化した場合のみ、ログイン中に動作します。
 - 個人プロジェクトであり、Kick とは提携・承認関係にありません。
 

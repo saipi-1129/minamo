@@ -13,7 +13,7 @@ case "$profile" in debug|release) ;; *) fail "KICK_BUILD_PROFILE must be debug o
 target_dir=${CARGO_TARGET_DIR:-$workspace_root/target}
 case "$target_dir" in /*) ;; *) target_dir="$workspace_root/$target_dir" ;; esac
 binary="$target_dir/$profile/kick-gpui-poc"
-output_app=${1:-/private/tmp/KickNative.app}
+output_app=${1:-/private/tmp/Minamo.app}
 
 case "$output_app" in
     /private/tmp/*.app) ;;
@@ -23,7 +23,7 @@ esac
     || fail "output must be a direct child app bundle under /private/tmp"
 [ ! -L "$output_app" ] || fail "refusing to replace an output symlink"
 if [ -e "$output_app" ]; then
-    [ "$output_app" = /private/tmp/KickNative.app ] \
+    [ "$output_app" = /private/tmp/Minamo.app ] \
         || fail "only the fixed development bundle can be replaced"
     [ -d "$output_app" ] || fail "existing output is not an app directory"
     existing_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$output_app/Contents/Info.plist")
@@ -90,9 +90,9 @@ cat > "$contents/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Kick Native</string>
+  <string>Minamo</string>
   <key>CFBundleDisplayName</key>
-  <string>Kick Native</string>
+  <string>Minamo</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundlePackageType</key>
@@ -135,11 +135,11 @@ codesign --force --deep --sign "${KICK_CODESIGN_IDENTITY:--}" --timestamp=none "
 codesign --verify --deep --strict --verbose=2 "$bundle_directory"
 if [ -e "$output_app" ]; then
     backup_directory=$(mktemp -d /private/tmp/kick-native-previous.XXXXXX)
-    mv "$output_app" "$backup_directory/KickNative.app"
+    mv "$output_app" "$backup_directory/Minamo.app"
 fi
 if ! mv "$bundle_directory" "$output_app"; then
     if [ -n "${backup_directory:-}" ]; then
-        mv "$backup_directory/KickNative.app" "$output_app"
+        mv "$backup_directory/Minamo.app" "$output_app"
     fi
     fail "could not publish verified app; previous build restored"
 fi

@@ -2624,6 +2624,7 @@ dependencies = [
  "reqwest",
  "reqwest_client",
  "rustls",
+ "serde_json",
  "tokio",
 ]
 

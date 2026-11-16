@@ -49,6 +49,11 @@ fn chat_input_host() -> Option<Rc<RefCell<ChatInputField>>> {
     CHAT_INPUT_HOST.with(|slot| slot.borrow().clone())
 }
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const UPDATE_REPO: &str = "saipi-1129/minamo";
+const UPDATE_TEAM_ID: &str = "XULN99D28S";
+const UPDATE_BUNDLE_ID: &str = "dev.codex.kick-native";
+
 const CHAT_OVERDRAW: f32 = 144.0;
 /// How long the chat stays connected after a live stream ends so a raid
 /// published after the end can still arrive.
@@ -354,6 +359,37 @@ fn tr(ja: &'static str) -> &'static str {
         "送信" => "Send",
         "キャンセル" => "Cancel",
         "メッセージを送信する" => "Send a message",
+        "アップデート" => "Updates",
+        "GitHub Releases から最新版を確認します。" => {
+            "Check GitHub Releases for the latest version."
+        }
+        "今すぐ確認" => "Check now",
+        "確認しています…" => "Checking…",
+        "最新版です" => "You are up to date",
+        "ダウンロード" => "Download",
+        "ダウンロードしています…" => "Downloading…",
+        "再起動して更新" => "Restart and update",
+        "アプリの場所を取得できません" => "Could not locate the app",
+        "アプリバンドルから起動していません" => {
+            "The app is not running from an app bundle"
+        }
+        "更新スクリプトを作成できません" => "Could not create the update script",
+        "更新を開始できません" => "Could not start the update",
+        "更新確認を開始できません" => "Could not start the update check",
+        "更新情報を取得できません" => "Could not fetch update information",
+        "更新情報を読み取れません" => "Could not read update information",
+        "キャッシュを作成できません" => "Could not create the update cache",
+        "ダウンロードを開始できません" => "Could not start the download",
+        "ダウンロードできません" => "Could not download the update",
+        "ダウンロードが中断されました" => "The download was interrupted",
+        "保存できません" => "Could not save the download",
+        "展開できません" => "Could not mount the update",
+        "DMGを開けません" => "Could not open the DMG",
+        "アプリが見つかりません" => "The app was not found in the DMG",
+        "署名を確認できません" => "Could not verify the signature",
+        "署名の Team ID が一致しません" => "The signature team ID does not match",
+        "アプリの識別子が一致しません" => "The app identifier does not match",
+        "アプリをコピーできません" => "Could not copy the app",
         "メッセージが長すぎます（500文字まで）" => {
             "The message is too long (500 characters max)"
         }
@@ -547,8 +583,8 @@ fn tr(ja: &'static str) -> &'static str {
         "バックグラウンド通知: 無効" => "Background notifications: off",
         "有効にする" => "Enable",
         "無効にする" => "Disable",
-        "バックグラウンド通知を有効にしました。初回は「Kick Native Notifier」の通知許可を求めるダイアログが出ます" => {
-            "Background notifications enabled. The first run asks for permission for Kick Native Notifier."
+        "バックグラウンド通知を有効にしました。初回は「Minamo Notifier」の通知許可を求めるダイアログが出ます" => {
+            "Background notifications enabled. The first run asks for permission for Minamo Notifier."
         }
         "バックグラウンド通知を無効にしました" => {
             "Background notifications disabled"
@@ -633,11 +669,11 @@ fn tr(ja: &'static str) -> &'static str {
         "Keychainから削除できません" => "Could not delete from the Keychain",
         "Keychainから読み込めません" => "Could not read from the Keychain",
         "Keychainに保存できません" => "Could not save to the Keychain",
-        "Kick Native について" => "About Kick Native",
-        "Kick Native の動作を変更します" => "Change how Kick Native behaves",
-        "Kick Native を終了" => "Quit Kick Native",
-        "Kick Native を隠す" => "Hide Kick Native",
-        "Kick Native デバッグ" => "Kick Native Debug",
+        "Minamo について" => "About Minamo",
+        "Minamo の動作を変更します" => "Change how Minamo behaves",
+        "Minamo を終了" => "Quit Minamo",
+        "Minamo を隠す" => "Hide Minamo",
+        "Minamo デバッグ" => "Minamo Debug",
         "Kickを検索" => "Search Kick",
         "Kickチャットメッセージ" => "Kick chat messages",
         "Tokio runtimeを起動できません" => "Could not start the Tokio runtime",
@@ -885,6 +921,9 @@ struct KickShell {
     settings_tab: SettingsTab,
     followed_limit: usize,
     raid_display_seconds: u64,
+    update_state: UpdateState,
+    update_generation: u64,
+    update_started: bool,
     account_menu_open: bool,
     debug_mode: bool,
     notify_channels: HashSet<String>,
@@ -2163,6 +2202,9 @@ impl KickShell {
             settings_tab: SettingsTab::General,
             followed_limit: load_followed_limit(),
             raid_display_seconds: load_raid_display_seconds(),
+            update_state: UpdateState::Idle,
+            update_generation: 0,
+            update_started: false,
             account_menu_open: false,
             debug_mode: load_debug_mode(),
             notify_channels: load_notify_channels(),
@@ -2244,6 +2286,7 @@ impl KickShell {
         this.chat_input_host
             .borrow()
             .set_placeholder(tr("メッセージを送信する"));
+        this.start_update_check(cx);
         this
     }
 
@@ -2363,7 +2406,7 @@ impl KickShell {
             .args(["kickstart", "-k", &service])
             .status();
         self.notification_notice = Some(tr(
-            "バックグラウンド通知を有効にしました。初回は「Kick Native Notifier」の通知許可を求めるダイアログが出ます",
+            "バックグラウンド通知を有効にしました。初回は「Minamo Notifier」の通知許可を求めるダイアログが出ます",
         )
         .to_owned());
         cx.notify();
@@ -2464,7 +2507,7 @@ impl KickShell {
     }
 
     fn test_notification(&mut self, cx: &mut Context<Self>) {
-        let _ = kick_player_macos::post_notification("Kick Native", tr("テスト通知です"), "");
+        let _ = kick_player_macos::post_notification("Minamo", tr("テスト通知です"), "");
         cx.notify();
     }
 
@@ -4243,6 +4286,129 @@ impl KickShell {
         self.load_more_following(cx);
     }
 
+    fn start_update_check(&mut self, cx: &mut Context<Self>) {
+        if self.update_started {
+            return;
+        }
+        self.update_started = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            let _ = this.update(cx, |this, cx| this.check_for_updates(cx));
+        })
+        .detach();
+    }
+
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.update_state,
+            UpdateState::Checking | UpdateState::Downloading
+        ) {
+            return;
+        }
+        self.update_generation = self.update_generation.wrapping_add(1);
+        let generation = self.update_generation;
+        self.update_state = UpdateState::Checking;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch_latest_release() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.update_generation {
+                    return;
+                }
+                match result {
+                    Ok(Some(release)) if version_is_newer(&release.version, APP_VERSION) => {
+                        this.toast = Some((
+                            t!("v{} が利用可能です", "v{} is available", release.version),
+                            Instant::now(),
+                        ));
+                        this.update_state = UpdateState::Available {
+                            version: release.version,
+                            url: release.url,
+                            notes: release.notes,
+                        };
+                    }
+                    Ok(_) => this.update_state = UpdateState::UpToDate,
+                    Err(error) => this.update_state = UpdateState::Failed(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn download_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Available { version, url, .. } = self.update_state.clone() else {
+            return;
+        };
+        self.update_state = UpdateState::Downloading;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { download_and_verify(&version, &url) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_state = match result {
+                    Ok((version, app)) => UpdateState::Ready { version, app },
+                    Err(error) => UpdateState::Failed(error),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Ready { version, app } = self.update_state.clone() else {
+            return;
+        };
+        let Ok(executable) = std::env::current_exe() else {
+            self.update_state = UpdateState::Failed(tr("アプリの場所を取得できません").to_owned());
+            cx.notify();
+            return;
+        };
+        let Some(bundle) = executable.parent().and_then(|path| path.parent()) else {
+            self.update_state = UpdateState::Failed(tr("アプリの場所を取得できません").to_owned());
+            cx.notify();
+            return;
+        };
+        if bundle.extension().and_then(|value| value.to_str()) != Some("app") {
+            self.update_state =
+                UpdateState::Failed(tr("アプリバンドルから起動していません").to_owned());
+            cx.notify();
+            return;
+        }
+        let Some(script) = write_update_script(&app, bundle) else {
+            self.update_state =
+                UpdateState::Failed(tr("更新スクリプトを作成できません").to_owned());
+            cx.notify();
+            return;
+        };
+        let spawned = std::process::Command::new("sh")
+            .arg(&script)
+            .arg(std::process::id().to_string())
+            .arg(&app)
+            .arg(bundle)
+            .spawn();
+        if spawned.is_err() {
+            self.update_state = UpdateState::Failed(tr("更新を開始できません").to_owned());
+            cx.notify();
+            return;
+        }
+        self.toast = Some((
+            t!(
+                "v{} に更新します。アプリを終了します…",
+                "Updating to v{}. Quitting…",
+                version
+            ),
+            Instant::now(),
+        ));
+        cx.quit();
+    }
+
     fn set_chat_delay(&mut self, seconds: u64, cx: &mut Context<Self>) {
         let seconds = seconds.min(CHAT_DELAY_MAX_SECONDS);
         if self.chat_delay_seconds == seconds {
@@ -4311,7 +4477,7 @@ impl KickShell {
         self.save_current_settings();
         cx.set_menus(app_menus());
         if let Some(window) = self.debug_window {
-            let title = tr("Kick Native デバッグ");
+            let title = tr("Minamo デバッグ");
             let _ = window.update(cx, |_, window, _| window.set_window_title(title));
         }
         cx.notify();
@@ -4349,7 +4515,7 @@ impl KickShell {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(tr("Kick Native デバッグ").into()),
+                    title: Some(tr("Minamo デバッグ").into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -5018,6 +5184,30 @@ impl LiveError {
             Self::Api(error) => error.to_string(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available {
+        version: String,
+        url: String,
+        notes: String,
+    },
+    Downloading,
+    Ready {
+        version: String,
+        app: PathBuf,
+    },
+    Failed(String),
+}
+
+struct ReleaseInfo {
+    version: String,
+    url: String,
+    notes: String,
 }
 
 fn chat_send_rejection_reason(code: &str) -> String {
@@ -6771,6 +6961,7 @@ impl Render for KickShell {
                 self.settings_tab,
                 self.followed_limit,
                 self.raid_display_seconds,
+                &self.update_state,
                 cx,
             ));
         } else if self.video_fullscreen {
@@ -7952,11 +8143,12 @@ fn sidebar_header(collapsed: bool, cx: &mut Context<KickShell>) -> Div {
     );
     if !collapsed {
         header = header.child(
-            gpui::svg()
-                .data(include_bytes!("../assets/kick-logo.svg"))
-                .w(px(72.0))
-                .h(px(24.0))
-                .text_color(rgb(ACCENT)),
+            img(Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                include_bytes!("../assets/app-icon.png").to_vec(),
+            )))
+            .w(px(24.0))
+            .h(px(24.0)),
         );
     }
     header
@@ -8918,6 +9110,370 @@ fn settings_tabs(selected: SettingsTab, cx: &mut Context<KickShell>) -> Stateful
         ))
 }
 
+fn update_cache_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Caches/KickRust/updates"))
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let parse = |value: &str| -> Vec<u64> {
+        value
+            .trim_start_matches('v')
+            .split(['.', '-', '+'])
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let latest = parse(latest);
+    let current = parse(current);
+    for index in 0..latest.len().max(current.len()) {
+        let left = latest.get(index).copied().unwrap_or(0);
+        let right = current.get(index).copied().unwrap_or(0);
+        if left != right {
+            return left > right;
+        }
+    }
+    false
+}
+
+fn fetch_latest_release() -> Result<Option<ReleaseInfo>, String> {
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| tr("更新確認を開始できません").to_owned())?;
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .user_agent(format!("kick-native/{APP_VERSION}"))
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|_| tr("更新確認を開始できません").to_owned())?;
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+            ))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|_| tr("更新情報を取得できません").to_owned())?;
+        if !response.status().is_success() {
+            return Err(t!(
+                "更新情報を取得できません (HTTP {})",
+                "Could not check for updates (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| tr("更新情報を読み取れません").to_owned())?;
+        let tag = value
+            .get("tag_name")
+            .and_then(|item| item.as_str())
+            .unwrap_or_default();
+        let version = tag.trim_start_matches('v').to_owned();
+        if version.is_empty() {
+            return Ok(None);
+        }
+        let notes = value
+            .get("body")
+            .and_then(|item| item.as_str())
+            .unwrap_or_default()
+            .chars()
+            .take(1200)
+            .collect::<String>();
+        let url = value
+            .get("assets")
+            .and_then(|item| item.as_array())
+            .and_then(|assets| {
+                assets.iter().find_map(|asset| {
+                    let name = asset.get("name")?.as_str()?;
+                    if !name.ends_with(".dmg") {
+                        return None;
+                    }
+                    asset
+                        .get("browser_download_url")
+                        .and_then(|item| item.as_str())
+                        .map(str::to_owned)
+                })
+            });
+        match url {
+            Some(url) => Ok(Some(ReleaseInfo {
+                version,
+                url,
+                notes,
+            })),
+            None => Ok(None),
+        }
+    })
+}
+
+fn download_and_verify(version: &str, url: &str) -> Result<(String, PathBuf), String> {
+    let cache = update_cache_dir().ok_or_else(|| tr("キャッシュを作成できません").to_owned())?;
+    fs::create_dir_all(&cache).map_err(|_| tr("キャッシュを作成できません").to_owned())?;
+    let dmg = cache.join(format!("Minamo-{version}.dmg"));
+    let app = cache.join(format!("Minamo-{version}.app"));
+    let mount = cache.join("mount");
+    let _ = fs::remove_file(&dmg);
+    let _ = fs::remove_dir_all(&app);
+    let _ = fs::remove_dir_all(&mount);
+
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| tr("ダウンロードを開始できません").to_owned())?;
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .user_agent(format!("kick-native/{APP_VERSION}"))
+            .timeout(Duration::from_secs(600))
+            .build()
+            .map_err(|_| tr("ダウンロードを開始できません").to_owned())?;
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| tr("ダウンロードできません").to_owned())?;
+        if !response.status().is_success() {
+            return Err(t!(
+                "ダウンロードできません (HTTP {})",
+                "Could not download (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+        let mut file = fs::File::create(&dmg).map_err(|_| tr("保存できません").to_owned())?;
+        use std::io::Write as _;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| tr("ダウンロードが中断されました").to_owned())?
+        {
+            file.write_all(&chunk)
+                .map_err(|_| tr("保存できません").to_owned())?;
+        }
+        Ok(())
+    })?;
+
+    fs::create_dir_all(&mount).map_err(|_| tr("展開できません").to_owned())?;
+    let attached = std::process::Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+        .arg(&mount)
+        .arg(&dmg)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !attached {
+        let _ = fs::remove_dir_all(&mount);
+        return Err(tr("DMGを開けません").to_owned());
+    }
+
+    let mounted_app = mount.join("Minamo.app");
+    let mut failure = None;
+    if !mounted_app.is_dir() {
+        failure = Some(tr("アプリが見つかりません").to_owned());
+    } else {
+        let verified = std::process::Command::new("codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&mounted_app)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !verified {
+            failure = Some(tr("署名を確認できません").to_owned());
+        } else {
+            let identity = std::process::Command::new("codesign")
+                .args(["-dv", "--verbose=4"])
+                .arg(&mounted_app)
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stderr).into_owned())
+                .unwrap_or_default();
+            if !identity.contains(&format!("TeamIdentifier={UPDATE_TEAM_ID}")) {
+                failure = Some(tr("署名の Team ID が一致しません").to_owned());
+            } else {
+                let bundle_id = std::process::Command::new("defaults")
+                    .arg("read")
+                    .arg(mounted_app.join("Contents/Info"))
+                    .arg("CFBundleIdentifier")
+                    .output()
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                    .unwrap_or_default();
+                if bundle_id != UPDATE_BUNDLE_ID {
+                    failure = Some(tr("アプリの識別子が一致しません").to_owned());
+                } else {
+                    let copied = std::process::Command::new("ditto")
+                        .arg(&mounted_app)
+                        .arg(&app)
+                        .status()
+                        .map(|status| status.success())
+                        .unwrap_or(false);
+                    if !copied {
+                        failure = Some(tr("アプリをコピーできません").to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = std::process::Command::new("hdiutil")
+        .args(["detach", "-force"])
+        .arg(&mount)
+        .status();
+    let _ = fs::remove_dir_all(&mount);
+    let _ = fs::remove_file(&dmg);
+    if let Some(error) = failure {
+        let _ = fs::remove_dir_all(&app);
+        return Err(error);
+    }
+    Ok((version.to_owned(), app))
+}
+
+fn write_update_script(new_app: &Path, target: &Path) -> Option<PathBuf> {
+    let cache = update_cache_dir()?;
+    fs::create_dir_all(&cache).ok()?;
+    let script = cache.join("install.sh");
+    let contents = format!(
+        r#"#!/bin/sh
+pid="$1"
+new_app="$2"
+target="$3"
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+backup="${{target}}.previous"
+rm -rf "$backup"
+if [ -e "$target" ]; then
+  mv "$target" "$backup" || {{ open "$target"; exit 1; }}
+fi
+if ditto "$new_app" "$target"; then
+  xattr -dr com.apple.quarantine "$target" 2>/dev/null
+  open "$target"
+else
+  rm -rf "$target"
+  mv "$backup" "$target"
+  open "$target"
+fi
+"#
+    );
+    fs::write(&script, contents).ok()?;
+    let _ = new_app;
+    let _ = target;
+    Some(script)
+}
+
+fn settings_action_button(
+    id: &'static str,
+    label: &'static str,
+    cx: &mut Context<KickShell>,
+    action: impl Fn(&mut KickShell, &mut Context<KickShell>) + 'static,
+) -> Stateful<Div> {
+    let action = Rc::new(action);
+    let click_action = action.clone();
+    let key_action = action;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .bg(rgb(RAISED))
+        .text_size(px(12.0))
+        .text_color(rgb(TEXT))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(SELECTED_ROW)))
+        .on_click(cx.listener(move |this, _event, _window, cx| click_action(this, cx)))
+        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
+            if is_activation_key(event) {
+                key_action(this, cx);
+            }
+        }))
+        .child(label)
+}
+
+fn update_settings_section(state: &UpdateState, cx: &mut Context<KickShell>) -> Div {
+    let mut section = settings_section(
+        tr("アップデート"),
+        tr("GitHub Releases から最新版を確認します。"),
+    )
+    .child(div().text_size(px(12.0)).text_color(rgb(MUTED)).child(t!(
+        "現在のバージョン: {}",
+        "Current version: {}",
+        APP_VERSION
+    )));
+    match state {
+        UpdateState::Idle => {
+            section = section.child(settings_action_button(
+                "update-check",
+                tr("今すぐ確認"),
+                cx,
+                |this, cx| this.check_for_updates(cx),
+            ));
+        }
+        UpdateState::Checking => {
+            section = section.child(sidebar_section_status(tr("確認しています…")));
+        }
+        UpdateState::UpToDate => {
+            section = section
+                .child(sidebar_section_status(tr("最新版です")))
+                .child(settings_action_button(
+                    "update-check",
+                    tr("今すぐ確認"),
+                    cx,
+                    |this, cx| this.check_for_updates(cx),
+                ));
+        }
+        UpdateState::Available { version, notes, .. } => {
+            section = section
+                .child(sidebar_section_status(&t!(
+                    "v{version} が利用可能です",
+                    "v{version} is available"
+                )))
+                .child(settings_action_button(
+                    "update-download",
+                    tr("ダウンロード"),
+                    cx,
+                    |this, cx| this.download_update(cx),
+                ));
+            if !notes.is_empty() {
+                section = section.child(
+                    div()
+                        .max_h(px(120.0))
+                        .overflow_hidden()
+                        .text_size(px(11.0))
+                        .text_color(rgb(MUTED))
+                        .child(notes.clone()),
+                );
+            }
+        }
+        UpdateState::Downloading => {
+            section = section.child(sidebar_section_status(tr("ダウンロードしています…")));
+        }
+        UpdateState::Ready { version, .. } => {
+            section = section
+                .child(sidebar_section_status(&t!(
+                    "v{version} をインストールできます",
+                    "v{version} is ready to install"
+                )))
+                .child(settings_action_button(
+                    "update-install",
+                    tr("再起動して更新"),
+                    cx,
+                    |this, cx| this.install_update(cx),
+                ));
+        }
+        UpdateState::Failed(error) => {
+            section = section
+                .child(sidebar_section_status(&t!(
+                    "更新を確認できません: {error}",
+                    "Could not check for updates: {error}"
+                )))
+                .child(settings_action_button(
+                    "update-retry",
+                    tr("再試行"),
+                    cx,
+                    |this, cx| this.check_for_updates(cx),
+                ));
+        }
+    }
+    section
+}
+
 fn settings_page(
     chat_delay_seconds: u64,
     pending_count: usize,
@@ -8932,6 +9488,7 @@ fn settings_page(
     settings_tab: SettingsTab,
     followed_limit: usize,
     raid_display_seconds: u64,
+    update_state: &UpdateState,
     cx: &mut Context<KickShell>,
 ) -> impl IntoElement {
     let mut raid_options = div().flex().flex_wrap().items_center().gap_2();
@@ -9031,7 +9588,7 @@ fn settings_page(
                             div()
                                 .text_size(px(12.0))
                                 .text_color(rgb(MUTED))
-                                .child(tr("Kick Native の動作を変更します")),
+                                .child(tr("Minamo の動作を変更します")),
                         ),
                 )
                 .child(
@@ -9472,8 +10029,21 @@ fn settings_page(
                             )),
                     ),
                 ))
+                .when(settings_tab == SettingsTab::App, |page| {
+                    page.child(update_settings_section(update_state, cx))
+                })
                 .when(settings_tab == SettingsTab::App, |page| page.child(
-                    settings_section(tr("このアプリについて"), "Kick Native 0.1.0")
+                    settings_section(tr("このアプリについて"), "Minamo")
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(MUTED))
+                                .child(t!(
+                                    "バージョン {}",
+                                    "Version {}",
+                                    APP_VERSION
+                                )),
+                        )
                         .child(
                             div()
                                 .text_size(px(12.0))
@@ -14111,6 +14681,28 @@ fn process_memory_bytes() -> Option<(u64, u64)> {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--update-check-selftest") {
+        match fetch_latest_release() {
+            Ok(Some(release)) => println!(
+                "latest={} newer={} url={}",
+                release.version,
+                version_is_newer(&release.version, APP_VERSION),
+                release.url
+            ),
+            Ok(None) => println!("latest=none"),
+            Err(error) => println!("error={error}"),
+        }
+        return;
+    }
+    if let Some(position) = std::env::args().position(|arg| arg == "--update-selftest") {
+        let version = std::env::args().nth(position + 1).unwrap_or_default();
+        let url = std::env::args().nth(position + 2).unwrap_or_default();
+        match download_and_verify(&version, &url) {
+            Ok((version, app)) => println!("ok version={version} app={}", app.display()),
+            Err(error) => println!("error={error}"),
+        }
+        return;
+    }
     if std::env::args().any(|arg| arg == "--notify-helper-status") {
         let _ = kick_player_macos::request_notification_authorization();
         std::thread::sleep(Duration::from_secs(1));
@@ -14121,7 +14713,7 @@ fn main() {
         let _ = kick_player_macos::request_notification_authorization();
         std::thread::sleep(Duration::from_secs(1));
         println!("status={}", kick_player_macos::notification_status());
-        let _ = kick_player_macos::post_notification("Kick Native Notifier", "テスト通知です", "");
+        let _ = kick_player_macos::post_notification("Minamo Notifier", "テスト通知です", "");
         std::thread::sleep(Duration::from_secs(1));
         return;
     }
@@ -14510,17 +15102,17 @@ fn open_main_window(cx: &mut App) {
 
 fn app_menus() -> Vec<Menu> {
     vec![Menu {
-        name: "Kick Native".into(),
+        name: "Minamo".into(),
         items: vec![
-            MenuItem::action(tr("Kick Native について"), ShowAbout),
+            MenuItem::action(tr("Minamo について"), ShowAbout),
             MenuItem::separator(),
             MenuItem::action(tr("設定…"), OpenSettings),
             MenuItem::separator(),
-            MenuItem::action(tr("Kick Native を隠す"), HideApp),
+            MenuItem::action(tr("Minamo を隠す"), HideApp),
             MenuItem::action(tr("ほかを隠す"), HideOtherApps),
             MenuItem::action(tr("すべてを表示"), ShowAllApps),
             MenuItem::separator(),
-            MenuItem::action(tr("Kick Native を終了"), QuitApp),
+            MenuItem::action(tr("Minamo を終了"), QuitApp),
         ],
         disabled: false,
     }]
