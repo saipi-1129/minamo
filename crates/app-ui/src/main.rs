@@ -14,6 +14,7 @@ use kick_live::{
 use kick_player_macos::{
     PlaybackSnapshot, Player, PlayerError, PlayerItemStatus, PlayerQualityCap, PlayerState,
     PlayerTransportStatus,
+    chat_input::ChatInputField,
     credentials::{self, CredentialError, SecretCookieInput},
 };
 use objc2_app_kit::NSView;
@@ -37,6 +38,16 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{runtime::Builder as RuntimeBuilder, sync::oneshot, time::timeout};
+
+thread_local! {
+    /// The single embedded chat field owned by the shell. The composer renders a
+    /// canvas that positions this native view inside the window.
+    static CHAT_INPUT_HOST: RefCell<Option<Rc<RefCell<ChatInputField>>>> = const { RefCell::new(None) };
+}
+
+fn chat_input_host() -> Option<Rc<RefCell<ChatInputField>>> {
+    CHAT_INPUT_HOST.with(|slot| slot.borrow().clone())
+}
 
 const CHAT_OVERDRAW: f32 = 144.0;
 /// How long the chat stays connected after a live stream ends so a raid
@@ -343,6 +354,9 @@ fn tr(ja: &'static str) -> &'static str {
         "送信" => "Send",
         "キャンセル" => "Cancel",
         "メッセージを送信する" => "Send a message",
+        "メッセージが長すぎます（500文字まで）" => {
+            "The message is too long (500 characters max)"
+        }
         "Enter で送信 / Ctrl+A で全選択 / 日本語・英語は入力メニューで切り替え" => {
             "Enter to send / Ctrl+A to select all / switch Japanese and English from the input menu"
         }
@@ -802,6 +816,7 @@ struct KickShell {
     selected_channel_id: Option<u64>,
     selected_channel_details: SelectedChannelDetails,
     emote_ids_by_name: Arc<HashMap<String, u64>>,
+    emote_order: Arc<Vec<(String, u64)>>,
     recent_streams: Vec<String>,
     search_query: String,
     search_state: SearchState,
@@ -855,8 +870,7 @@ struct KickShell {
     following_loading_more: bool,
     following_generation: u64,
     show_all_recommended: bool,
-    chat_input: String,
-    chat_input_focus: FocusHandle,
+    chat_input_host: Rc<RefCell<ChatInputField>>,
     chat_input_notice: Option<String>,
     chat_context_menu: Option<ChatContextMenu>,
     suppress_menu_close: bool,
@@ -2078,6 +2092,7 @@ impl KickShell {
             selected_channel_id: None,
             selected_channel_details: SelectedChannelDetails::default(),
             emote_ids_by_name: Arc::new(HashMap::new()),
+            emote_order: Arc::new(Vec::new()),
             search_query: String::new(),
             search_state: SearchState::Idle,
             search_generation: 0,
@@ -2130,8 +2145,9 @@ impl KickShell {
             following_loading_more: false,
             following_generation: 0,
             show_all_recommended: false,
-            chat_input: String::new(),
-            chat_input_focus: cx.focus_handle().tab_index(0),
+            chat_input_host: Rc::new(RefCell::new(
+                ChatInputField::new().expect("native chat input field"),
+            )),
             chat_input_notice: None,
             chat_context_menu: None,
             suppress_menu_close: false,
@@ -2220,6 +2236,12 @@ impl KickShell {
         }
         this.start_notifications(cx);
         this.refresh_notification_permission(cx);
+        CHAT_INPUT_HOST.with(|slot| {
+            *slot.borrow_mut() = Some(this.chat_input_host.clone());
+        });
+        this.chat_input_host
+            .borrow()
+            .set_placeholder(tr("メッセージを送信する"));
         this
     }
 
@@ -2364,9 +2386,13 @@ impl KickShell {
         }
         let domain = format!("gui/{}", unsafe { libc::getuid() });
         let service = format!("{domain}/dev.codex.kick-native.notifier");
-        let _ = std::process::Command::new("launchctl")
-            .args(["kickstart", "-k", &service])
-            .status();
+        // `launchctl kickstart` can block until the helper finishes launching, so never
+        // wait for it on the UI thread.
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("launchctl")
+                .args(["kickstart", "-k", &service])
+                .status();
+        });
     }
 
     fn handle_stream_notification(
@@ -2881,32 +2907,18 @@ impl KickShell {
         cx.notify();
     }
 
-    fn begin_chat_input(&mut self, cx: &mut Context<Self>) {
-        let receiver = kick_player_macos::chat_input::begin_chat_input_prompt(
-            &self.chat_input,
-            tr("コメントを入力"),
-            tr("送信"),
-            tr("キャンセル"),
-            tr("メッセージを送信する"),
-            tr("Enter で送信 / Ctrl+A で全選択 / 日本語・英語は入力メニューで切り替え"),
-        );
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { receiver.recv().ok().flatten() })
-                .await;
-            if let Some(text) = result {
-                let _ = this.update(cx, |this, cx| {
-                    this.chat_input = text;
-                    this.send_chat_message(cx);
-                });
-            }
-        })
-        .detach();
-    }
-
     fn send_chat_message(&mut self, cx: &mut Context<Self>) {
-        let content = self.chat_input.trim().to_owned();
+        let raw = self.chat_input_host.borrow().text();
+        // Match the web client: trim, normalise the heart shortcode, and fold newlines.
+        let content = raw
+            .trim()
+            .replace("<3", "\u{1F49A}")
+            .replace(['\r', '\n'], " ");
+        if content.chars().count() > 500 {
+            self.chat_input_notice = Some(tr("メッセージが長すぎます（500文字まで）").to_owned());
+            cx.notify();
+            return;
+        }
         if content.is_empty() {
             self.chat_input_notice = Some(tr("メッセージを入力してください").to_owned());
             cx.notify();
@@ -2940,7 +2952,7 @@ impl KickShell {
                 this.chat_send_pending = false;
                 match result {
                     Ok(()) => {
-                        this.chat_input.clear();
+                        this.chat_input_host.borrow().set_text("");
                         this.chat_input_notice = Some(tr("送信しました").to_owned());
                     }
                     Err(error) => {
@@ -3693,8 +3705,14 @@ impl KickShell {
                     return;
                 }
                 match result {
-                    Ok(Ok(emote_ids)) => {
-                        this.emote_ids_by_name = Arc::new(emote_ids);
+                    Ok(Ok(emotes)) => {
+                        this.emote_ids_by_name = Arc::new(
+                            emotes
+                                .iter()
+                                .map(|(name, id)| (name.to_ascii_lowercase(), *id))
+                                .collect::<HashMap<_, _>>(),
+                        );
+                        this.emote_order = Arc::new(emotes);
                         this.chat_state.reset(this.chat_messages.len());
                         this.chat_state.set_follow_mode(FollowMode::Tail);
                         this.chat_state.scroll_to_end();
@@ -3898,6 +3916,14 @@ impl KickShell {
             loop {
                 cx.background_executor().timer(CHAT_UI_BATCH_INTERVAL).await;
                 let update = this.update(cx, |view, cx| {
+                    let input_dirty = view.chat_input_host.borrow().take_dirty();
+                    let input_submitted = view.chat_input_host.borrow().take_submit();
+                    if input_dirty {
+                        cx.notify();
+                    }
+                    if input_submitted {
+                        view.send_chat_message(cx);
+                    }
                     let events = view
                         .live_worker
                         .as_mut()
@@ -4946,11 +4972,80 @@ impl LiveError {
     }
 }
 
+fn chat_send_rejection_reason(code: &str) -> String {
+    match code {
+        "ACCOUNT_AGE_MODE_ERROR" => t!(
+            "アカウントの年齢設定により送信できません",
+            "Your account age setting blocks sending"
+        ),
+        "BANNED_ERROR" => t!(
+            "このチャンネルでは送信が禁止されています",
+            "You are banned from chatting in this channel"
+        ),
+        "EMOTES_ONLY_ERROR" => t!(
+            "このチャンネルはエモートのみ送信できます",
+            "This channel only allows emote messages"
+        ),
+        "FOLLOWERS_ONLY_ERROR" => t!(
+            "フォロワーのみ送信できます",
+            "Only followers can send messages"
+        ),
+        "FOREIGN_CHANNEL_EMOTE_ERROR" => t!(
+            "このチャンネルでは使えないエモートが含まれています",
+            "The message contains an emote from another channel"
+        ),
+        "INVALID_EMOTE_ERROR" => t!(
+            "無効なエモートが含まれています",
+            "The message contains an invalid emote"
+        ),
+        "MAX_SPECIAL_CHARS_ERROR" => t!(
+            "特殊文字が多すぎます",
+            "The message has too many special characters"
+        ),
+        "MESSAGE_CONTENT_LENGTH_ERROR" => t!("メッセージが長すぎます", "The message is too long"),
+        "NO_LINKS_ERROR" => t!("リンクは送信できません", "Links are not allowed"),
+        "ORIGINAL_MESSAGE_NOT_FOUND_ERROR" => t!(
+            "返信先のメッセージが見つかりません",
+            "The message being replied to was not found"
+        ),
+        "RATE_LIMIT_ERROR" => t!("送信が速すぎます", "You are sending too fast"),
+        "SLOW_MODE_ERROR" => t!("スローモード中です", "Slow mode is enabled"),
+        "SUBSCRIBERS_ONLY_EMOTE_ERROR" => t!(
+            "サブスクライバー限定のエモートです",
+            "That emote is for subscribers only"
+        ),
+        "SUBSCRIBERS_ONLY_ERROR" => t!(
+            "サブスクライバーのみ送信できます",
+            "Only subscribers can send messages"
+        ),
+        _ => String::new(),
+    }
+}
+
 fn chat_send_error_message(error: KickApiError) -> String {
     match error {
         KickApiError::SessionRequired => tr("送信にはログインが必要です").to_owned(),
         KickApiError::SessionInvalid => tr("セッションを確認できません").to_owned(),
         KickApiError::HttpStatus(429) => tr("送信が制限されています（レート制限）").to_owned(),
+        KickApiError::ChatSendRejected { status, code } => {
+            let mut reason = chat_send_rejection_reason(code);
+            if reason.is_empty()
+                && let Some(detail) = kick_live::take_chat_send_rejection()
+            {
+                reason = detail;
+            }
+            if reason.is_empty() {
+                t!(
+                    "送信できません (HTTP {status})",
+                    "Could not send (HTTP {status})"
+                )
+            } else {
+                t!(
+                    "送信できません (HTTP {status}): {reason}",
+                    "Could not send (HTTP {status}): {reason}"
+                )
+            }
+        }
         KickApiError::HttpStatus(status) => t!(
             "送信できません (HTTP {status})",
             "Could not send (HTTP {status})"
@@ -5329,7 +5424,7 @@ enum WorkerCommand {
     Emotes {
         slug: String,
         cancel: Arc<AtomicBool>,
-        reply: oneshot::Sender<Result<HashMap<String, u64>, LiveError>>,
+        reply: oneshot::Sender<Result<Vec<(String, u64)>, LiveError>>,
     },
     VodSource {
         uuid: String,
@@ -5622,7 +5717,7 @@ impl LiveWorker {
     fn request_emotes(
         &mut self,
         slug: String,
-    ) -> oneshot::Receiver<Result<HashMap<String, u64>, LiveError>> {
+    ) -> oneshot::Receiver<Result<Vec<(String, u64)>, LiveError>> {
         self.cancel_emotes();
         let cancel = Arc::new(AtomicBool::new(false));
         let (reply, receiver) = oneshot::channel();
@@ -5979,13 +6074,15 @@ fn live_worker_loop(
                         let groups =
                             cancellable_request(client.anonymous_channel_emotes(&slug), cancel)
                                 .await?;
-                        let mut emote_ids = HashMap::new();
+                        let mut seen = HashSet::new();
+                        let mut emotes = Vec::new();
+                        // Groups arrive channel-first, then global, then emoji.
                         for emote in groups.into_iter().flat_map(|group| group.emotes) {
-                            emote_ids
-                                .entry(emote.name.to_ascii_lowercase())
-                                .or_insert(emote.id);
+                            if seen.insert(emote.name.to_ascii_lowercase()) {
+                                emotes.push((emote.name, emote.id));
+                            }
                         }
-                        Ok(emote_ids)
+                        Ok(emotes)
                     }),
                     (None, _) => Err(LiveError::RuntimeUnavailable),
                     (_, Some(Err(error))) => Err(LiveError::Api(*error)),
@@ -6400,6 +6497,13 @@ fn bounded_recent_messages(page: AnonymousRecentMessages) -> Vec<ChatMessage> {
 
 impl Render for KickShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        {
+            let field = self.chat_input_host.borrow();
+            if !field.painted_this_frame() {
+                field.set_hidden(true);
+            }
+            field.begin_frame();
+        }
         // Keyboard events only reach the shell's `on_key_down` while a node in
         // its subtree has focus, so give the root focus once after the first frame.
         if !self.root_focus_initialized {
@@ -6690,12 +6794,11 @@ impl Render for KickShell {
                 self.feed_visible,
                 chat_messages.clone(),
                 emote_ids_by_name.clone(),
+                self.emote_order.clone(),
                 emote_image_cache.clone(),
                 self.chat_history_state,
                 self.chat_unread_messages,
                 narrow_chat_height,
-                self.chat_input.clone(),
-                self.chat_input_focus.clone(),
                 self.chat_input_notice.clone(),
                 self.chat_send_pending,
                 self.chat_send_confirmation,
@@ -6744,11 +6847,10 @@ impl Render for KickShell {
                     rendered_chat_width,
                     chat_messages,
                     emote_ids_by_name,
+                    self.emote_order.clone(),
                     emote_image_cache,
                     self.chat_history_state,
                     self.chat_unread_messages,
-                    self.chat_input.clone(),
-                    self.chat_input_focus.clone(),
                     self.chat_input_notice.clone(),
                     self.chat_send_pending,
                     self.chat_send_confirmation,
@@ -6961,7 +7063,7 @@ impl Render for KickShell {
 
                 let has_interactive_focus = this.root_focus.contains_focused(window, cx);
                 let text_input_has_focus =
-                    search_has_focus || this.chat_input_focus.is_focused(window);
+                    search_has_focus || this.chat_input_host.borrow().is_focused();
                 if let Some(shortcut) =
                     player_shortcut(key, search_has_focus, has_interactive_focus, modifiers)
                 {
@@ -9441,12 +9543,11 @@ fn main_column(
     feed_visible: bool,
     chat_messages: Arc<[ChatMessage]>,
     emote_ids_by_name: Arc<HashMap<String, u64>>,
+    emote_order: Arc<Vec<(String, u64)>>,
     emote_image_cache: Entity<BoundedEmoteImageCache>,
     chat_history_state: ChatHistoryState,
     chat_unread_messages: usize,
     narrow_chat_height: f32,
-    chat_input: String,
-    chat_input_focus: FocusHandle,
     chat_input_notice: Option<String>,
     chat_send_pending: bool,
     chat_send_confirmation: bool,
@@ -9599,11 +9700,10 @@ fn main_column(
             chat_state,
             chat_messages,
             emote_ids_by_name,
+            emote_order,
             emote_image_cache,
             chat_history_state,
             chat_unread_messages,
-            chat_input,
-            chat_input_focus,
             chat_input_notice,
             narrow_chat_height,
             chat_send_pending,
@@ -12325,11 +12425,10 @@ fn chat_column(
     width: f32,
     chat_messages: Arc<[ChatMessage]>,
     emote_ids_by_name: Arc<HashMap<String, u64>>,
+    emote_order: Arc<Vec<(String, u64)>>,
     emote_image_cache: Entity<BoundedEmoteImageCache>,
     history_state: ChatHistoryState,
     unread_messages: usize,
-    chat_input: String,
-    chat_input_focus: FocusHandle,
     chat_input_notice: Option<String>,
     chat_send_pending: bool,
     chat_send_confirmation: bool,
@@ -12416,12 +12515,11 @@ fn chat_column(
             cx,
         ))
         .child(chat_composer(
-            chat_input,
-            &chat_input_focus,
             chat_input_notice,
             chat_send_pending,
             chat_send_confirmation,
             &emote_ids_by_name,
+            &emote_order,
             emote_picker_open,
             emote_image_cache,
             window,
@@ -12467,11 +12565,10 @@ fn inline_chat_panel(
     chat_state: ListState,
     chat_messages: Arc<[ChatMessage]>,
     emote_ids_by_name: Arc<HashMap<String, u64>>,
+    emote_order: Arc<Vec<(String, u64)>>,
     emote_image_cache: Entity<BoundedEmoteImageCache>,
     history_state: ChatHistoryState,
     unread_messages: usize,
-    chat_input: String,
-    chat_input_focus: FocusHandle,
     chat_input_notice: Option<String>,
     panel_height: f32,
     chat_send_pending: bool,
@@ -12553,12 +12650,11 @@ fn inline_chat_panel(
             cx,
         ))
         .child(chat_composer(
-            chat_input,
-            &chat_input_focus,
             chat_input_notice,
             chat_send_pending,
             chat_send_confirmation,
             &emote_ids_by_name,
+            &emote_order,
             emote_picker_open,
             emote_image_cache,
             window,
@@ -12566,25 +12662,48 @@ fn inline_chat_panel(
         ))
 }
 
+fn attach_chat_input(
+    host: &Rc<RefCell<ChatInputField>>,
+    window: &mut Window,
+    bounds: Bounds<gpui::Pixels>,
+) {
+    if bounds.is_empty() {
+        return;
+    }
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    let field = host.borrow();
+    field.attach(
+        appkit.ns_view.as_ptr(),
+        f64::from(bounds.origin.x.as_f32()),
+        f64::from(bounds.origin.y.as_f32()),
+        f64::from(bounds.size.width.as_f32()),
+        f64::from(bounds.size.height.as_f32()),
+    );
+    field.mark_painted();
+}
+
 fn chat_composer(
-    chat_input: String,
-    chat_input_focus: &FocusHandle,
     notice: Option<String>,
     chat_send_pending: bool,
     chat_send_confirmation: bool,
     emote_ids_by_name: &HashMap<String, u64>,
+    emote_order: &[(String, u64)],
     emote_picker_open: bool,
     emote_image_cache: Entity<BoundedEmoteImageCache>,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<KickShell>,
 ) -> Div {
-    let focused = chat_input_focus.is_focused(window);
-    let value = if chat_input.is_empty() && !focused {
-        tr("メッセージを送信する")
-    } else {
-        chat_input.as_str()
-    };
-    let color = if chat_input.is_empty() { MUTED } else { TEXT };
+    let input_empty = chat_input_host()
+        .map(|host| host.borrow().text().trim().is_empty())
+        .unwrap_or(true);
+    if let Some(host) = chat_input_host() {
+        host.borrow().set_placeholder(tr("メッセージを送信する"));
+    }
     let mut composer = div()
         .image_cache(emote_image_cache)
         .min_h(px(64.0))
@@ -12678,10 +12797,16 @@ fn chat_composer(
                     ),
             );
         } else {
-            let mut entries: Vec<(&String, &u64)> = emote_ids_by_name.iter().collect();
-            entries.sort_by(|left, right| left.0.cmp(right.0));
+            // Channel emotes come first so they are never pushed out by the cap.
+            let mut fallback: Vec<(&String, &u64)> = emote_ids_by_name.iter().collect();
+            fallback.sort_by(|left, right| left.0.cmp(right.0));
+            let ordered: Vec<(&String, &u64)> = if emote_order.is_empty() {
+                fallback
+            } else {
+                emote_order.iter().map(|(name, id)| (name, id)).collect()
+            };
             let mut grid = div().flex().flex_wrap().gap_1();
-            for (name, id) in entries.into_iter().take(48) {
+            for (name, id) in ordered.into_iter().take(96) {
                 let token = format!("[emote:{id}:{name}]");
                 grid = grid.child(
                     div()
@@ -12698,7 +12823,8 @@ fn chat_composer(
                         .cursor_pointer()
                         .hover(|style| style.bg(rgb(SELECTED_ROW)))
                         .on_click(cx.listener(move |this, _event, _window, cx| {
-                            this.chat_input.push_str(&token);
+                            this.chat_input_host.borrow().append_text(&token);
+                            this.chat_input_host.borrow().focus();
                             this.chat_send_confirmation = false;
                             cx.notify();
                         }))
@@ -12716,62 +12842,30 @@ fn chat_composer(
             .gap_2()
             .child(
                 div()
+                    .on_children_prepainted(move |children, window, _cx| {
+                        if let Some(bounds) = children.first()
+                            && let Some(host) = chat_input_host()
+                        {
+                            attach_chat_input(&host, window, *bounds);
+                        }
+                    })
                     .id("chat-input")
-                    .track_focus(chat_input_focus)
                     .role(Role::TextInput)
                     .aria_label(tr("チャットメッセージ"))
                     .tab_index(0)
                     .flex_1()
                     .min_w(px(0.0))
                     .h(px(36.0))
-                    .px_3()
-                    .flex()
-                    .items_center()
                     .rounded_full()
                     .bg(rgb(RAIL_BG))
-                    .text_size(px(12.0))
-                    .text_color(rgb(color))
                     .cursor_text()
                     .focus_visible(|style| style.bg(rgb(SELECTED_ROW)))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.begin_chat_input(cx);
-                    }))
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                        if event.is_held {
-                            return;
-                        }
-                        match event.keystroke.key.as_str() {
-                            "backspace" => {
-                                this.chat_input.pop();
-                                this.chat_input_notice = None;
-                                this.chat_send_confirmation = false;
-                                cx.notify();
-                            }
-                            "enter" => {
-                                this.send_chat_message(cx);
-                            }
-                            _ => {
-                                if !event.keystroke.modifiers.modified()
-                                    && let Some(character) = event.keystroke.key_char.as_deref()
-                                    && !character.chars().any(char::is_control)
-                                {
-                                    this.chat_input.push_str(character);
-                                    this.chat_input_notice = None;
-                                    this.chat_send_confirmation = false;
-                                    cx.notify();
-                                }
-                            }
+                    .on_click(cx.listener(|_this, _event, _window, _cx| {
+                        if let Some(host) = chat_input_host() {
+                            host.borrow().focus();
                         }
                     }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .child(value.to_owned())
-                            .when(focused, |row| {
-                                row.child(div().w(px(1.0)).h(px(16.0)).bg(rgb(TEXT)))
-                            }),
-                    ),
+                    .child(div().absolute().inset_0()),
             )
             .child(
                 div()
@@ -12814,7 +12908,7 @@ fn chat_composer(
                     .bg(rgb(ACCENT))
                     .text_size(px(12.0))
                     .text_color(rgb(0x0B0B0F))
-                    .opacity(if chat_input.trim().is_empty() || chat_send_pending {
+                    .opacity(if input_empty || chat_send_pending {
                         0.5
                     } else {
                         1.0

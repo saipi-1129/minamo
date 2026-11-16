@@ -10,7 +10,7 @@ use std::fmt;
 use std::time::Duration;
 
 use reqwest::header::{
-    ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, REFERER,
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, ORIGIN, REFERER,
 };
 use reqwest::{RequestBuilder, Response, Url};
 use serde::Deserialize;
@@ -21,7 +21,7 @@ use super::{KickClient, TransportFailure, classify_transport};
 
 const SESSION_USER_URL: &str = "https://kick.com/api/v1/user";
 const SESSION_TOKEN_COOKIE: &str = "session_token";
-const SESSION_REFERER: &str = "https://kick.com/";
+const SESSION_REFERER: &str = "https://kick.com";
 const MAX_SESSION_COOKIE_BYTES: usize = 8 * 1024;
 const MAX_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 128;
@@ -197,6 +197,7 @@ impl SessionCookie {
         request = request
             .header(ACCEPT, "application/json")
             .header(REFERER, SESSION_REFERER)
+            .header(ORIGIN, "https://kick.com")
             .header("x-app-platform", "web");
         if let Some(token) = self.session_token() {
             let mut bearer = Zeroizing::new(format!("Bearer {}", token.as_str()));

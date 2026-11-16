@@ -113,6 +113,11 @@ pub enum KickApiError {
     InvalidJson,
     SessionRequired,
     SessionInvalid,
+    /// A chat send was rejected with a known server error code.
+    ChatSendRejected {
+        status: u16,
+        code: &'static str,
+    },
 }
 
 impl fmt::Display for KickApiError {
@@ -144,6 +149,12 @@ impl fmt::Display for KickApiError {
             Self::InvalidJson => formatter.write_str("Kick API returned an invalid response"),
             Self::SessionRequired => {
                 formatter.write_str("Kick sign-in is required for this request")
+            }
+            Self::ChatSendRejected { status, code } => {
+                write!(
+                    formatter,
+                    "Kick rejected the chat message (HTTP {status}): {code}"
+                )
             }
             Self::SessionInvalid => {
                 formatter.write_str("Kick sign-in headers could not be constructed")
@@ -1544,7 +1555,9 @@ impl KickClient {
             .await
             .map_err(|error| KickApiError::Transport(classify_transport(&error)))?;
         if !response.status().is_success() {
-            return Err(KickApiError::HttpStatus(response.status().as_u16()));
+            let status = response.status().as_u16();
+            let code = chat_send_error_code(response).await;
+            return Err(KickApiError::ChatSendRejected { status, code });
         }
         Ok(())
     }
@@ -2185,6 +2198,68 @@ fn chat_send_url(chatroom_id: u64) -> Result<Url, KickApiError> {
     }
     Url::parse(&format!("{CHAT_SEND_BASE}/{chatroom_id}"))
         .map_err(|_| KickApiError::InvalidChannelId)
+}
+
+/// Last server-provided chat rejection text, kept out of `KickApiError` so the
+/// error enum stays `Copy`.
+static CHAT_SEND_REJECTION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Takes the last rejection text for display. The value is cleared on read.
+pub fn take_chat_send_rejection() -> Option<String> {
+    CHAT_SEND_REJECTION
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
+/// Known chat-send rejection codes observed in the public web client.
+const CHAT_SEND_ERROR_CODES: [&str; 14] = [
+    "ACCOUNT_AGE_MODE_ERROR",
+    "BANNED_ERROR",
+    "EMOTES_ONLY_ERROR",
+    "FOLLOWERS_ONLY_ERROR",
+    "FOREIGN_CHANNEL_EMOTE_ERROR",
+    "INVALID_EMOTE_ERROR",
+    "MAX_SPECIAL_CHARS_ERROR",
+    "MESSAGE_CONTENT_LENGTH_ERROR",
+    "NO_LINKS_ERROR",
+    "ORIGINAL_MESSAGE_NOT_FOUND_ERROR",
+    "RATE_LIMIT_ERROR",
+    "SLOW_MODE_ERROR",
+    "SUBSCRIBERS_ONLY_EMOTE_ERROR",
+    "SUBSCRIBERS_ONLY_ERROR",
+];
+
+/// Reads a bounded rejection body and returns the known error code it carries.
+async fn chat_send_error_code(response: Response) -> &'static str {
+    const MAX_DETAIL_BYTES: usize = 1024;
+    let Ok(bytes) = response.bytes().await else {
+        return "";
+    };
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_DETAIL_BYTES)]).into_owned();
+    let mut detail = text.trim().chars().take(160).collect::<String>();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        for pointer in [
+            "/data/status/message",
+            "/data/data/status/message",
+            "/status/message",
+            "/message",
+            "/error",
+        ] {
+            if let Some(message) = value.pointer(pointer).and_then(|item| item.as_str()) {
+                detail = message.chars().take(160).collect();
+                break;
+            }
+        }
+    }
+    if let Ok(mut slot) = CHAT_SEND_REJECTION.lock() {
+        *slot = Some(detail);
+    }
+    CHAT_SEND_ERROR_CODES
+        .iter()
+        .find(|code| text.contains(**code))
+        .copied()
+        .unwrap_or("")
 }
 
 fn chat_send_payload(content: &str) -> serde_json::Value {

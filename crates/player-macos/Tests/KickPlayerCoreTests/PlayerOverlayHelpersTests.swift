@@ -6,7 +6,7 @@ import XCTest
 final class PlayerQualityCapTests: XCTestCase {
     func testMenuTitlesAndOrderMatchTheOverlayMenu() {
         XCTAssertEqual(
-            PlayerQualityCap.allCases.map(\.title),
+            PlayerQualityCap.allCases.map { $0.title(for: .japanese) },
             ["自動", "1080p", "720p", "480p"]
         )
     }
