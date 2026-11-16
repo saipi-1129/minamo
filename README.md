@@ -32,28 +32,52 @@ The token is stored in the macOS Keychain. `kick_session` alone does not work. A
 
 **Playback**
 
-- Native AVPlayer video surface with a GPUI shell; no embedded browser or web view.
-- Live playback, DVR seeking, quality caps, subtitles (CC), picture in picture, fullscreen and theater modes.
-- The latency policy stays enabled by default. The old "low latency" toggle was removed because the label was misleading.
+- Native AVPlayer video surface inside a GPUI shell; no embedded browser or web view.
+- Live playback, DVR seeking, quality caps (Auto/1080p/720p/480p), subtitles (CC), picture in picture, fullscreen, and theater modes.
+- VOD playback with a resumed position, and clip playback.
+- The latency policy stays enabled by default; there is no "low latency" toggle.
 
 **Chat**
 
 - Real-time chat with emotes, badges, comment delay, channel points, and raid/host events.
-- Inline native chat input inside the composer (no popup): macOS input method (Japanese/English), Ctrl+A, copy/paste, undo, and Enter to send.
-- The emote picker lists the channel's own emotes first, and picking one inserts it into the input.
+- Inline native chat input in the composer (no popup): macOS input method (Japanese/English), Ctrl+A, copy/paste, undo, and Enter to send.
+- The emote picker lists the channel's own emotes first and inserts the selected emote into the input.
 - Failed sends show Kick's reason (slow mode, followers-only, invalid emote, rate limit, …).
-- Chat popout window, message copy, and unread counts.
+- Chat popout window, message copy, unread counts, and local hiding of a user's messages.
 
 **Browse**
 
-- Channel pages, clips with pagination, VOD resume, search, and followed channels.
+- Home with recommended streams and a category overview, browse, and search.
+- Followed page with live, channels, and categories tabs.
+- Channel page with home, videos, clips, and about tabs.
 - The sidebar followed list shows live channels only and fills up to the configured count (5/8/12/20/30/50).
 
 **Notifications and settings**
 
-- Stream-start notifications through Kick's `channel.{id}` realtime push, with an optional headless LaunchAgent helper for notifications after the app quits.
-- Settings tabs for general, video, notifications, and app preferences: UI language (Japanese/English), default quality, comment delay, danmaku overlay (on/off, size, opacity), raid banner duration, and followed count.
-- Keyboard shortcuts, mouse back/forward navigation, and `⌘Q` to quit.
+- Stream-start notifications from Kick's realtime push, per channel; an optional LaunchAgent helper keeps notifying after the app quits.
+- Settings: UI language (Japanese/English), default quality, comment delay, danmaku overlay (on/off, size, opacity), raid banner duration, and followed count.
+- Keyboard shortcuts and mouse back/forward navigation.
+
+**Sign-in**
+
+- Sign in with the `session_token` value, a full Cookie header, or a JSON cookie export. The session is stored in the macOS Keychain and can be removed from the app.
+
+### Not yet supported
+
+- Subscriptions (subscribe, gift a sub, payments)
+- Events tab and upcoming/scheduled streams
+- Chat replies and threads
+- Chat moderation (delete message, timeout, ban)
+- Server-side mute and report (only local hiding is available)
+- Predictions and polls
+- Emote search, favorites, and recent emotes (the picker shows up to 96)
+- Chat font size (only the danmaku overlay size is configurable)
+- Category browse pages (the home screen shows a category overview only)
+- Clip creation
+- Search filters (category, language)
+- Pre-send checks for slow mode and followers-only (the server rejects the send)
+- Auto-update and notarization
+- Multiple accounts
 
 ### Keyboard and mouse
 
@@ -104,8 +128,6 @@ The build uses `/private/tmp` for artifacts; the source tree stays clean.
 
 - Kick's web API and realtime protocol are not a stable public contract and may change without notice.
 - Chat sending uses Kick's web session route (`POST /api/v2/messages/send/{chatroomId}`), which is not a documented public API. A message is sent only when you press Enter or the send button.
-- The followed sidebar lists live channels only; offline followed channels are hidden.
-- Subscription and payment APIs are not implemented.
 - The DMG is not notarized; Gatekeeper may require a manual Open.
 - Notifications require macOS permission. The background helper must be enabled in Settings and runs only while the user is logged in.
 - This is a personal project and is not affiliated with or endorsed by Kick.
@@ -143,8 +165,9 @@ Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/kic
 **再生**
 
 - AVPlayer によるネイティブ映像表示。ブラウザや WebView の埋め込みなし。
-- ライブ再生、DVR シーク、画質上限、字幕（CC）、ピクチャ・イン・ピクチャ、全画面・劇場モード。
-- 遅延ポリシーは常時オン。誤解を招く「低遅延」表記と切り替えは削除しました。
+- ライブ再生、DVR シーク、画質上限（自動/1080p/720p/480p）、字幕（CC）、ピクチャ・イン・ピクチャ、全画面、劇場モード。
+- VOD 再生（再生位置の復元つき）とクリップ再生。
+- 遅延ポリシーは常時オン。「低遅延」の切り替えはありません。
 
 **チャット**
 
@@ -152,18 +175,41 @@ Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/kic
 - チャット欄内のネイティブ入力欄（ポップアップなし）。日本語/英語入力、Ctrl+A、コピー/貼り付け、取り消し、Enter 送信に対応。
 - エモート一覧は配信者固有のエモートを先頭に表示し、選ぶと入力欄に挿入されます。
 - 送信に失敗した場合は Kick の拒否理由（スローモード、フォロワー限定、無効なエモート、レート制限など）を表示。
-- チャットの別ウィンドウ表示、メッセージのコピー、未読数表示。
+- チャットの別ウィンドウ表示、メッセージのコピー、未読数表示、特定ユーザーのローカル非表示。
 
-**視聴**
+**視聴・探索**
 
-- チャンネルページ、クリップの追加読み込み、VOD の再生位置復元、検索、フォロー中チャンネル。
+- ホーム（おすすめ配信、カテゴリ概要）、ブラウズ、検索。
+- フォロー中ページ（ライブ / チャンネル / カテゴリ）。
+- チャンネルページ（ホーム / 配信 / クリップ / 概要）。
 - 左のフォロー中は配信中のチャンネルのみ表示し、設定した件数（5/8/12/20/30/50件）まで自動で読み込みます。
 
-**通知と設定**
+**通知・設定**
 
-- Kick の `channel.{id}` リアルタイム push による配信開始通知。アプリ終了後も通知する場合は LaunchAgent ヘルパーを設定から有効化。
-- 設定を「一般 / 映像 / 通知 / アプリ」のタブに分類。表示言語（日本語/英語）、デフォルト画質、コメント遅延、流れるコメント（オン/オフ・サイズ・透明度）、レイド表示時間、フォロー表示数を変更可能。
-- キーボードショートカット、マウスの戻る/進む、`⌘Q` での終了。
+- Kick のリアルタイム push による配信開始通知（チャンネルごとにオン/オフ）。アプリ終了後も通知する場合は LaunchAgent ヘルパーを有効化。
+- 設定: 表示言語（日本語/英語）、デフォルト画質、コメント遅延、流れるコメント（オン/オフ・サイズ・透明度）、レイド表示時間、フォロー表示数。
+- キーボードショートカット、マウスの戻る/進む。
+
+**ログイン**
+
+- `session_token` の値、Cookie ヘッダー、JSON の Cookie エクスポートからログインできます。セッションは macOS の Keychain に保存し、アプリから削除できます。
+
+### 未対応の機能
+
+- サブスクリプション（登録・ギフトサブ・支払い）
+- イベント一覧、予定されている配信
+- チャットの返信・スレッド
+- チャットのモデレーション（メッセージ削除、タイムアウト、BAN）
+- サーバー側のミュート・通報（ローカル非表示のみ）
+- 予測（Predictions）・投票（Polls）
+- エモートの検索・お気に入り・最近使った（一覧は最大96件）
+- チャット本文の文字サイズ（流れるコメントのサイズのみ設定可能）
+- カテゴリ別のブラウズページ（ホームのカテゴリ概要のみ）
+- クリップの作成
+- 検索の絞り込み（カテゴリ・言語）
+- スローモード/フォロワー限定の送信前チェック（送信後にサーバーが拒否）
+- 自動アップデート、公証（notarization）
+- 複数アカウントの切り替え
 
 ### キーボードとマウス
 
@@ -212,8 +258,6 @@ KICK_NATIVE_BUILD_ROOT=/private/tmp/kick-native-build tools/build-macos.sh insta
 
 - Kick の Web API とリアルタイムプロトコルは安定した公開仕様ではなく、予告なく変更される可能性があります。
 - チャット送信は Kick の Web セッション経路（`POST /api/v2/messages/send/{chatroomId}`）を使用しており、公開 API ではありません。Enter か送信ボタンを押したときだけ送信します。
-- 左のフォロー中は配信中のチャンネルのみ表示し、オフラインのチャンネルは表示されません。
-- サブスクリプション/支払い API は未実装です。
 - DMG は公証されていないため、Gatekeeper の警告が出る場合があります。
 - 通知には macOS の許可が必要です。バックグラウンド通知ヘルパーは設定で有効化した場合のみ、ログイン中に動作します。
 - 個人プロジェクトであり、Kick とは提携・承認関係にありません。
