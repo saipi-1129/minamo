@@ -1,0 +1,9 @@
+Kick Native
+Copyright 2026 Kick Native contributors
+
+This product includes software developed by Zed Industries, Inc.
+(GPUI, https://github.com/zed-industries/zed), licensed under the
+Apache License, Version 2.0.
+
+Third-party Rust and Swift dependencies retain their own licenses.
+See Cargo.lock and the corresponding upstream repositories for details.

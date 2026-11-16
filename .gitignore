@@ -1,0 +1,55 @@
+# Rust build output
+/target/
+**/target/
+
+# Android input and analysis artifacts
+*.apk
+*.apks
+*.aab
+*.dex
+/reference/
+**/apktool-out/
+**/jadx-out/
+**/android-decoded/
+
+# macOS / Xcode outputs
+.DS_Store
+DerivedData/
+**/.build/
+**/.swiftpm/
+*.xcarchive/
+*.dSYM/
+*.app/
+
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.mobileprovision
+*.p12
+*.pfx
+*.key
+*.pem
+# Browser cookie export used for manual auth tests; never commit it.
+/test.json
+
+# Runtime captures and extracted bytecode
+*.log
+*.ips
+*.har
+*.pcap
+*.pcapng
+*.hbc
+*.android.bundle
+/captures/
+/logs/
+/docs/performance/*.jsonl
+
+# Editor / temporary files
+.idea/
+.vscode/
+*.swp
+*.tmp
+__pycache__/

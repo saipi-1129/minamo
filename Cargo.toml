@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kick-core",
+    "crates/kick-live",
+    "crates/app-ui",
+    "crates/player-macos",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"

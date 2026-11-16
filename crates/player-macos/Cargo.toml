@@ -1,0 +1,9 @@
+[package]
+name = "kick-player-macos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[lib]
+path = "rust-bridge/src/lib.rs"
