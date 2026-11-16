@@ -23,7 +23,7 @@ private final class KickNotificationDelegate: NSObject, UNUserNotificationCenter
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         // The helper has no window. Bring the main app forward instead.
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "dev.codex.kick-native") {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "dev.codex.minamo") {
             NSWorkspace.shared.openApplication(
                 at: appURL,
                 configuration: NSWorkspace.OpenConfiguration()

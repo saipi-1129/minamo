@@ -27,7 +27,7 @@ if [ -e "$output_app" ]; then
         || fail "only the fixed development bundle can be replaced"
     [ -d "$output_app" ] || fail "existing output is not an app directory"
     existing_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$output_app/Contents/Info.plist")
-    [ "$existing_id" = dev.codex.kick-native ] || fail "existing app identity does not match"
+    [ "$existing_id" = dev.codex.minamo ] || fail "existing app identity does not match"
 fi
 [ -x "$binary" ] || fail "missing executable: $binary (build it with cargo build -p kick-gpui-poc)"
 xcrun lipo -verify_arch arm64 "$binary" >/dev/null 2>&1 \
@@ -86,7 +86,7 @@ cat > "$contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>kick-gpui-poc</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.codex.kick-native</string>
+  <string>dev.codex.minamo</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -98,9 +98,9 @@ cat > "$contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>__APP_VERSION__</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>__APP_VERSION__</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
@@ -115,6 +115,10 @@ cat > "$contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+app_version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$script_dir/Cargo.toml" | head -n 1)
+[ -n "$app_version" ] || fail "could not read the app version"
+sed -i '' "s/__APP_VERSION__/$app_version/g" "$contents/Info.plist"
 
 printf 'APPL????' > "$contents/PkgInfo"
 plutil -lint "$contents/Info.plist" >/dev/null \
@@ -146,4 +150,4 @@ fi
 codesign --verify --deep --strict --verbose=2 "$output_app"
 
 printf 'Packaged GPUI app: %s\n' "$output_app"
-printf 'Bundle ID: dev.codex.kick-native\nArchitecture: arm64\n'
+printf 'Bundle ID: dev.codex.minamo\nArchitecture: arm64\n'

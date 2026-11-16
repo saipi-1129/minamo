@@ -17,7 +17,8 @@ private enum CredentialBridgeStatus {
 }
 
 private let maximumCookieLength = 8 * 1024
-private let cookieKeychainService = "dev.codex.kick-native.session-cookie"
+private let cookieKeychainService = "dev.codex.minamo.session-cookie"
+private let legacyCookieKeychainService = "dev.codex.kick-native.session-cookie"
 private let cookieKeychainAccount = "default"
 public typealias KickCookiePromptCallback = @convention(c) (
     UnsafeMutableRawPointer?, Int32, UnsafeMutablePointer<UInt8>?, UInt
@@ -66,13 +67,40 @@ private func copyToNativeBuffer(
     return CredentialBridgeStatus.ok
 }
 
-private func makeKeychainQuery() -> [String: Any] {
+private func makeKeychainQuery(service: String = cookieKeychainService) -> [String: Any] {
     [
         kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: cookieKeychainService,
+        kSecAttrService as String: service,
         kSecAttrAccount as String: cookieKeychainAccount,
         kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
     ]
+}
+
+/// Moves the cookie saved by the pre-rename bundle to the Minamo service so an
+/// existing sign-in survives the bundle-identifier change.
+private func migrateLegacyCookieIfNeeded() {
+    var existing = makeKeychainQuery()
+    existing[kSecMatchLimit as String] = kSecMatchLimitOne
+    if SecItemCopyMatching(existing as CFDictionary, nil) == errSecSuccess {
+        return
+    }
+    var legacy = makeKeychainQuery(service: legacyCookieKeychainService)
+    legacy[kSecMatchLimit as String] = kSecMatchLimitOne
+    legacy[kSecReturnData as String] = kCFBooleanTrue
+    var result: CFTypeRef?
+    guard SecItemCopyMatching(legacy as CFDictionary, &result) == errSecSuccess,
+          let data = result as? Data else {
+        return
+    }
+    var mutable = data
+    mutable.withUnsafeBytes { rawBytes in
+        guard let base = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+            return
+        }
+        var status: Int32 = 0
+        _ = kickCredentialsSaveCookie(base, UInt(rawBytes.count), &status)
+    }
+    SecItemDelete(makeKeychainQuery(service: legacyCookieKeychainService) as CFDictionary)
 }
 
 /// Owns a separate, nonmodal native window. Using a nested modal event loop while a GPUI entity is
@@ -373,6 +401,8 @@ public func kickCredentialsLoadCookie(
     outLength.pointee = 0
     outKeychainStatus.pointee = 0
 
+    migrateLegacyCookieIfNeeded()
+
     var query = makeKeychainQuery()
     query[kSecMatchLimit as String] = kSecMatchLimitOne
     query[kSecReturnData as String] = kCFBooleanTrue
@@ -485,6 +515,7 @@ public func kickCredentialsDeleteCookie(
     outKeychainStatus.pointee = 0
 
     let status = SecItemDelete(makeKeychainQuery() as CFDictionary)
+    _ = SecItemDelete(makeKeychainQuery(service: legacyCookieKeychainService) as CFDictionary)
     guard status == errSecSuccess || status == errSecItemNotFound else {
         outKeychainStatus.pointee = status
         return CredentialBridgeStatus.keychainFailure

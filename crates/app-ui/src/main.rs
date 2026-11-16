@@ -52,7 +52,7 @@ fn chat_input_host() -> Option<Rc<RefCell<ChatInputField>>> {
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_REPO: &str = "saipi-1129/minamo";
 const UPDATE_TEAM_ID: &str = "XULN99D28S";
-const UPDATE_BUNDLE_ID: &str = "dev.codex.kick-native";
+const UPDATE_BUNDLE_ID: &str = "dev.codex.minamo";
 
 const CHAT_OVERDRAW: f32 = 144.0;
 /// How long the chat stays connected after a live stream ends so a raid
@@ -1359,12 +1359,32 @@ fn background_notifier_plist_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).map(|home| {
         home.join("Library")
             .join("LaunchAgents")
-            .join("dev.codex.kick-native.notifier.plist")
+            .join("dev.codex.minamo.notifier.plist")
     })
 }
 
 fn background_notifier_installed() -> bool {
     background_notifier_plist_path().is_some_and(|path| path.is_file())
+}
+
+/// Removes the LaunchAgent and plist written by the pre-rename bundle.
+fn remove_legacy_notifier() {
+    // `launchctl bootout` can block, so never wait for it on the UI thread.
+    std::thread::spawn(|| {
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let legacy_service = format!("{domain}/dev.codex.kick-native.notifier");
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &legacy_service])
+            .status();
+        if let Some(home) = std::env::var_os("HOME") {
+            let _ = fs::remove_file(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("LaunchAgents")
+                    .join("dev.codex.kick-native.notifier.plist"),
+            );
+        }
+    });
 }
 
 fn load_chat_delay_seconds() -> u64 {
@@ -2287,6 +2307,7 @@ impl KickShell {
             .borrow()
             .set_placeholder(tr("メッセージを送信する"));
         this.start_update_check(cx);
+        remove_legacy_notifier();
         this
     }
 
@@ -2323,9 +2344,8 @@ impl KickShell {
     }
 
     fn install_background_notifier(&mut self, cx: &mut Context<Self>) {
-        let helper = std::path::Path::new(
-            "/Applications/KickNativeNotifier.app/Contents/MacOS/kick-gpui-poc",
-        );
+        let helper =
+            std::path::Path::new("/Applications/MinamoNotifier.app/Contents/MacOS/kick-gpui-poc");
         if !helper.is_file() {
             self.notification_notice = Some(tr(
                 "バックグラウンド通知ヘルパーが見つかりません。アプリを再インストールしてください",
@@ -2349,10 +2369,10 @@ impl KickShell {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.codex.kick-native.notifier</string>
+  <string>dev.codex.minamo.notifier</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Applications/KickNativeNotifier.app/Contents/MacOS/kick-gpui-poc</string>
+    <string>/Applications/MinamoNotifier.app/Contents/MacOS/kick-gpui-poc</string>
     <string>--notify-helper</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -2385,7 +2405,7 @@ impl KickShell {
             return;
         }
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.kick-native.notifier");
+        let service = format!("{domain}/dev.codex.minamo.notifier");
         let path_text = path.to_string_lossy().into_owned();
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &service])
@@ -2414,7 +2434,7 @@ impl KickShell {
 
     fn uninstall_background_notifier(&mut self, cx: &mut Context<Self>) {
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.kick-native.notifier");
+        let service = format!("{domain}/dev.codex.minamo.notifier");
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &service])
             .status();
@@ -2430,7 +2450,7 @@ impl KickShell {
             return;
         }
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.kick-native.notifier");
+        let service = format!("{domain}/dev.codex.minamo.notifier");
         // `launchctl kickstart` can block until the helper finishes launching, so never
         // wait for it on the UI thread.
         std::thread::spawn(move || {

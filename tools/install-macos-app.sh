@@ -58,14 +58,14 @@ fi
 
 # The headless notification helper is installed alongside the app. It is not
 # loaded until the user enables background notifications in Settings.
-notifier_source=/private/tmp/KickNativeNotifier.app
-notifier_destination=/Applications/KickNativeNotifier.app
+notifier_source=/private/tmp/MinamoNotifier.app
+notifier_destination=/Applications/MinamoNotifier.app
 if [ -d "$notifier_source" ]; then
     codesign --verify --deep --strict "$notifier_source"
     notifier_staging="${notifier_destination}.staging.$$"
     ditto "$notifier_source" "$notifier_staging"
     if [ -e "$notifier_destination" ]; then
-        mv "$notifier_destination" "/private/tmp/KickNativeNotifier.previous.$(date +%Y%m%d%H%M%S).app"
+        mv "$notifier_destination" "/private/tmp/MinamoNotifier.previous.$(date +%Y%m%d%H%M%S).app"
     fi
     mv "$notifier_staging" "$notifier_destination"
     codesign --verify --deep --strict "$notifier_destination"
