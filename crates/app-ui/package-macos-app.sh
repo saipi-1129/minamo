@@ -27,7 +27,7 @@ if [ -e "$output_app" ]; then
         || fail "only the fixed development bundle can be replaced"
     [ -d "$output_app" ] || fail "existing output is not an app directory"
     existing_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$output_app/Contents/Info.plist")
-    [ "$existing_id" = dev.codex.minamo ] || fail "existing app identity does not match"
+    [ "$existing_id" = io.github.saipi-1129.minamo ] || fail "existing app identity does not match"
 fi
 [ -x "$binary" ] || fail "missing executable: $binary (build it with cargo build -p kick-gpui-poc)"
 xcrun lipo -verify_arch arm64 "$binary" >/dev/null 2>&1 \
@@ -93,7 +93,7 @@ cat > "$contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>kick-gpui-poc</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.codex.minamo</string>
+  <string>io.github.saipi-1129.minamo</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -157,4 +157,4 @@ fi
 codesign --verify --deep --strict --verbose=2 "$output_app"
 
 printf 'Packaged GPUI app: %s\n' "$output_app"
-printf 'Bundle ID: dev.codex.minamo\nArchitecture: arm64\n'
+printf 'Bundle ID: io.github.saipi-1129.minamo\nArchitecture: arm64\n'

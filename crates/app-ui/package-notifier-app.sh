@@ -27,7 +27,7 @@ bundle_directory="$staging_directory/MinamoNotifier.app"
 ditto "$source_app" "$bundle_directory"
 plist="$bundle_directory/Contents/Info.plist"
 
-/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.codex.minamo.notifier' "$plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.saipi-1129.minamo.notifier' "$plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName Minamo Notifier' "$plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Minamo Notifier' "$plist"
 if /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$plist" >/dev/null 2>&1; then
@@ -54,4 +54,4 @@ fi
 codesign --verify --deep --strict "$output_app"
 
 printf 'Packaged notifier app: %s\n' "$output_app"
-printf 'Bundle ID: dev.codex.minamo.notifier\n'
+printf 'Bundle ID: io.github.saipi-1129.minamo.notifier\n'

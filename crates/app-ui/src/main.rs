@@ -52,7 +52,7 @@ fn chat_input_host() -> Option<Rc<RefCell<ChatInputField>>> {
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_REPO: &str = "saipi-1129/minamo";
 const UPDATE_TEAM_ID: &str = "XULN99D28S";
-const UPDATE_BUNDLE_ID: &str = "dev.codex.minamo";
+const UPDATE_BUNDLE_ID: &str = "io.github.saipi-1129.minamo";
 
 const CHAT_OVERDRAW: f32 = 144.0;
 /// How long the chat stays connected after a live stream ends so a raid
@@ -1359,7 +1359,7 @@ fn background_notifier_plist_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).map(|home| {
         home.join("Library")
             .join("LaunchAgents")
-            .join("dev.codex.minamo.notifier.plist")
+            .join("io.github.saipi-1129.minamo.notifier.plist")
     })
 }
 
@@ -1372,17 +1372,22 @@ fn remove_legacy_notifier() {
     // `launchctl bootout` can block, so never wait for it on the UI thread.
     std::thread::spawn(|| {
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let legacy_service = format!("{domain}/dev.codex.kick-native.notifier");
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &legacy_service])
-            .status();
-        if let Some(home) = std::env::var_os("HOME") {
-            let _ = fs::remove_file(
-                PathBuf::from(home)
-                    .join("Library")
-                    .join("LaunchAgents")
-                    .join("dev.codex.kick-native.notifier.plist"),
-            );
+        for label in [
+            "dev.codex.kick-native.notifier",
+            "dev.codex.minamo.notifier",
+        ] {
+            let service = format!("{domain}/{label}");
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootout", &service])
+                .status();
+            if let Some(home) = std::env::var_os("HOME") {
+                let _ = fs::remove_file(
+                    PathBuf::from(home)
+                        .join("Library")
+                        .join("LaunchAgents")
+                        .join(format!("{label}.plist")),
+                );
+            }
         }
     });
 }
@@ -2370,7 +2375,7 @@ impl KickShell {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.codex.minamo.notifier</string>
+  <string>io.github.saipi-1129.minamo.notifier</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Applications/MinamoNotifier.app/Contents/MacOS/kick-gpui-poc</string>
@@ -2406,7 +2411,7 @@ impl KickShell {
             return;
         }
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.minamo.notifier");
+        let service = format!("{domain}/io.github.saipi-1129.minamo.notifier");
         let path_text = path.to_string_lossy().into_owned();
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &service])
@@ -2435,7 +2440,7 @@ impl KickShell {
 
     fn uninstall_background_notifier(&mut self, cx: &mut Context<Self>) {
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.minamo.notifier");
+        let service = format!("{domain}/io.github.saipi-1129.minamo.notifier");
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", &service])
             .status();
@@ -2451,7 +2456,7 @@ impl KickShell {
             return;
         }
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let service = format!("{domain}/dev.codex.minamo.notifier");
+        let service = format!("{domain}/io.github.saipi-1129.minamo.notifier");
         // `launchctl kickstart` can block until the helper finishes launching, so never
         // wait for it on the UI thread.
         std::thread::spawn(move || {
