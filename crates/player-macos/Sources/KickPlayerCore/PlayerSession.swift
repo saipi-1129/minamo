@@ -406,6 +406,16 @@ enum SubtitleSelection {
         return "\(language)|\(option.displayName)"
     }
 
+    /// Matches an option's language tag or display name against the preferred
+    /// language tags (for example `ja` / `japanese`).
+    static func languageMatches(language: String, name: String, tags: [String]) -> Bool {
+        let language = language.lowercased()
+        let name = name.lowercased()
+        return tags.contains { tag in
+            language == tag || language.hasPrefix("\(tag)-") || name.contains(tag)
+        }
+    }
+
     /// A readable menu title, falling back to the track ordinal when the
     /// playlist omits a display name.
     static func title(
@@ -501,6 +511,7 @@ public final class PlayerSurface: NSView {
     fileprivate var onLiveEdgeRequested: (() -> Void)?
     fileprivate var onLowLatencyChanged: ((Bool) -> Void)?
     fileprivate var onSubtitleChanged: ((Int) -> Void)?
+    fileprivate var onSubtitleAutoOn: (() -> Void)?
     fileprivate var onPictureInPictureToggleRequested: (() -> Void)?
     fileprivate var subtitleInfoProvider: (() -> (titles: [String], selected: Int))?
     fileprivate var pictureInPictureStateProvider: (() -> Bool)?
@@ -1405,7 +1416,14 @@ public final class PlayerSurface: NSView {
     }
 
     @objc private func selectSubtitle(_ sender: NSPopUpButton) {
-        onSubtitleChanged?(sender.indexOfSelectedItem)
+        switch sender.indexOfSelectedItem {
+        case 0:
+            onSubtitleChanged?(0)
+        case 1:
+            onSubtitleAutoOn?()
+        default:
+            onSubtitleChanged?(sender.indexOfSelectedItem - 1)
+        }
         revealControls()
     }
 
@@ -1479,9 +1497,10 @@ public final class PlayerSurface: NSView {
             return
         }
         button.addItem(withTitle: loc("オフ", "Off"))
+        button.addItem(withTitle: loc("オン（自動）", "On (auto)"))
         button.addItems(withTitles: info.titles)
         let selected = min(max(info.selected, 0), info.titles.count)
-        button.selectItem(at: selected)
+        button.selectItem(at: selected == 0 ? 0 : selected + 1)
         let label = selected == 0 ? loc("オフ", "Off") : info.titles[selected - 1]
         button.isEnabled = true
         button.setAccessibilityLabel(loc("字幕: \(label)", "Subtitles: \(label)"))
@@ -1912,6 +1931,10 @@ public final class PlayerSession {
         surface.onSubtitleChanged = { [weak self] index in
             guard let self, !self.isShutdown else { return }
             _ = self.setSubtitle(index: index)
+        }
+        surface.onSubtitleAutoOn = { [weak self] in
+            guard let self, !self.isShutdown else { return }
+            _ = self.enablePreferredSubtitle()
         }
         surface.pictureInPictureStateProvider = { [weak self] in
             self?.isPictureInPictureActive ?? false
@@ -2528,6 +2551,37 @@ public final class PlayerSession {
         return true
     }
 
+    /// Turns subtitles on with the app language's track when the stream offers
+    /// it (Japanese for the Japanese UI), falling back to the first track.
+    @discardableResult
+    public func enablePreferredSubtitle() -> Bool {
+        guard !subtitleOptions.isEmpty else { return false }
+        return setSubtitle(index: preferredSubtitleOptionIndex() + 1)
+    }
+
+    private func preferredSubtitleOptionIndex() -> Int {
+        let preferred = surface.language == .english
+            ? ["en", "english"]
+            : ["ja", "jp", "japanese", "日本語"]
+        if let index = subtitleOptions.firstIndex(where: { option in
+            subtitleOption(option, matchesAny: preferred)
+        }) {
+            return index
+        }
+        return 0
+    }
+
+    private func subtitleOption(
+        _ option: AVMediaSelectionOption,
+        matchesAny tags: [String]
+    ) -> Bool {
+        SubtitleSelection.languageMatches(
+            language: option.extendedLanguageTag ?? option.locale?.identifier ?? "",
+            name: option.displayName,
+            tags: tags
+        )
+    }
+
     /// Loads the legible-track list for a newly ready item and re-applies the
     /// previous choice by language/name when the same track still exists.
     /// The async asset API is used because the synchronous group lookup can
@@ -2707,6 +2761,7 @@ public final class PlayerSession {
         surface.onLiveEdgeRequested = nil
         surface.onLowLatencyChanged = nil
         surface.onSubtitleChanged = nil
+        surface.onSubtitleAutoOn = nil
         surface.onPictureInPictureToggleRequested = nil
         surface.subtitleInfoProvider = nil
         surface.pictureInPictureStateProvider = nil

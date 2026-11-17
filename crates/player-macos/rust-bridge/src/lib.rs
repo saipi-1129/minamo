@@ -32,6 +32,7 @@ unsafe extern "C" {
     fn kick_player_set_quality(handle: *mut c_void, cap: i32) -> i32;
     fn kick_player_set_vod_mode(handle: *mut c_void, enabled: i32) -> i32;
     fn kick_player_set_language(handle: *mut c_void, language: i32) -> i32;
+    fn kick_apply_appearance_icon();
     fn kick_notifications_request_authorization() -> i32;
     fn kick_notifications_status() -> i32;
     fn kick_notifications_post(
@@ -232,6 +233,12 @@ pub struct Player {
     _main_thread_affinity: PhantomData<Rc<()>>,
 }
 
+/// Applies the light or dark Dock icon for the current system appearance and
+/// keeps it in sync when the appearance changes. Call from the AppKit main thread.
+pub fn apply_appearance_icon() {
+    unsafe { kick_apply_appearance_icon() };
+}
+
 impl Player {
     /// Creates the native session. Must be called on the AppKit main thread.
     pub fn new() -> Result<Self, PlayerError> {
@@ -383,7 +390,6 @@ impl Player {
     }
 
     /// Marks the current item as a VOD/clip (true) or live (false).
-    /// Selects the native overlay language. Call from the AppKit main thread.
     pub fn set_language(&self, english: bool) -> Result<(), PlayerError> {
         match unsafe { kick_player_set_language(self.handle.as_ptr(), i32::from(english)) } {
             0 => Ok(()),

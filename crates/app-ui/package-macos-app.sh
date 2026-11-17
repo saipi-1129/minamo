@@ -47,6 +47,13 @@ install -m 755 "$binary" "$contents/MacOS/kick-gpui-poc"
 app_icon="$script_dir/assets/AppIcon.icns"
 [ -f "$app_icon" ] || fail "missing app icon: $app_icon"
 install -m 644 "$app_icon" "$contents/Resources/AppIcon.icns"
+# The bundle icon is the dark tile; the Dock icon switches to the light tile
+# at runtime when the system appearance is light.
+for variant in AppIcon-dark.png AppIcon-light.png; do
+    variant_path="$script_dir/assets/$variant"
+    [ -f "$variant_path" ] || fail "missing app icon variant: $variant_path"
+    install -m 644 "$variant_path" "$contents/Resources/$variant"
+done
 
 # Include the native bridge only when this executable links it.
 if otool -L "$contents/MacOS/kick-gpui-poc" | awk '$1 == "@rpath/libKickPlayerCBridge.dylib" { found=1 } END { exit !found }'; then

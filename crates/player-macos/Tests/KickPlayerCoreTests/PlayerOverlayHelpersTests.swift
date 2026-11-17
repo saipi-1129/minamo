@@ -11,6 +11,30 @@ final class PlayerQualityCapTests: XCTestCase {
         )
     }
 
+    func testSubtitleLanguageMatchingPrefersJapanese() {
+        XCTAssertTrue(
+            SubtitleSelection.languageMatches(
+                language: "ja",
+                name: "Japanese",
+                tags: ["ja", "jp", "japanese", "日本語"]
+            )
+        )
+        XCTAssertTrue(
+            SubtitleSelection.languageMatches(
+                language: "ja-JP",
+                name: "字幕",
+                tags: ["ja", "jp", "japanese", "日本語"]
+            )
+        )
+        XCTAssertFalse(
+            SubtitleSelection.languageMatches(
+                language: "en",
+                name: "English",
+                tags: ["ja", "jp", "japanese", "日本語"]
+            )
+        )
+    }
+
     func testQualityCapsUseExpectedMaximumResolutions() {
         XCTAssertEqual(PlayerQualityCap.automatic.maximumResolution, .zero)
         XCTAssertEqual(PlayerQualityCap.p1080.maximumResolution, CGSize(width: 1920, height: 1080))

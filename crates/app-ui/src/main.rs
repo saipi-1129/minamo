@@ -2308,6 +2308,7 @@ impl KickShell {
             .set_placeholder(tr("メッセージを送信する"));
         this.start_update_check(cx);
         remove_legacy_notifier();
+        kick_player_macos::apply_appearance_icon();
         this
     }
 
@@ -7582,6 +7583,14 @@ fn navigation_rail(
     cx: &mut Context<KickShell>,
 ) -> Stateful<Div> {
     let header = sidebar_header(collapsed, cx);
+    // The sidebar lists live followed channels by concurrent viewers, highest first.
+    let mut followed_channels = followed_channels;
+    followed_channels.sort_by(|left, right| {
+        right
+            .viewer_count
+            .unwrap_or(0)
+            .cmp(&left.viewer_count.unwrap_or(0))
+    });
     let mut nav_items = div()
         .id("primary-nav-tabs")
         .role(Role::TabList)
@@ -8165,10 +8174,10 @@ fn sidebar_header(collapsed: bool, cx: &mut Context<KickShell>) -> Div {
         header = header.child(
             img(Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
-                include_bytes!("../assets/app-icon.png").to_vec(),
+                include_bytes!("../assets/minamo-logo.png").to_vec(),
             )))
-            .w(px(24.0))
-            .h(px(24.0)),
+            .w(px(95.0))
+            .h(px(18.0)),
         );
     }
     header
