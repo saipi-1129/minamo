@@ -33,9 +33,10 @@ The token is stored in the macOS Keychain. `kick_session` alone does not work. A
 **Playback**
 
 - Native AVPlayer video surface inside a GPUI shell; no embedded browser or web view.
-- Live playback, DVR seeking, quality caps (Auto/1080p/720p/480p), subtitles (CC), picture in picture, fullscreen, and theater modes.
+- Live playback, DVR seeking, quality caps (Auto/1080p/720p/480p), subtitles (CC), picture in picture, video-only fullscreen, and theater modes.
 - VOD playback with a resumed position, and clip playback.
-- The latency policy stays enabled by default; there is no "low latency" toggle.
+- MetalFX Spatial upscaling while on AC power, toggled by the `FX ON` / `FX OFF` button above the seek bar.
+- An experimental loopback relay refreshes the live playlist sooner and is on by default; turn it off in Settings → Video if playback is unstable.
 
 **Chat**
 
@@ -171,9 +172,10 @@ Apple Silicon 用 DMG は [最新リリース](https://github.com/saipi-1129/min
 **再生**
 
 - AVPlayer によるネイティブ映像表示。ブラウザや WebView の埋め込みなし。
-- ライブ再生、DVR シーク、画質上限（自動/1080p/720p/480p）、字幕（CC）、ピクチャ・イン・ピクチャ、全画面、劇場モード。
+- ライブ再生、DVR シーク、画質上限（自動/1080p/720p/480p）、字幕（CC）、ピクチャ・イン・ピクチャ、映像のみ全画面、劇場モード。
 - VOD 再生（再生位置の復元つき）とクリップ再生。
-- 遅延ポリシーは常時オン。「低遅延」の切り替えはありません。
+- 充電中は MetalFX Spatial でアップスケール。シークバー上の `FX ON` / `FX OFF` で切り替え。
+- 低遅延リレー（実験的）を既定で有効。プレイリストの更新を早めます。再生が不安定な場合は設定 → 映像 でオフにできます。
 
 **チャット**
 

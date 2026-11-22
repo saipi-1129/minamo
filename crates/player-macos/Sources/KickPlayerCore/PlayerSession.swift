@@ -443,25 +443,33 @@ struct PlaybackLatencyPolicy: Equatable {
     let automaticallyWaitsToMinimizeStalling: Bool
     let preferredForwardBufferDuration: TimeInterval
     let canUseNetworkResourcesForLiveStreamingWhilePaused: Bool
+    let timeOffsetFromLive: CMTime
 
     static func resolve(isLive: Bool, lowLatencyEnabled: Bool) -> PlaybackLatencyPolicy {
         guard isLive else {
             return PlaybackLatencyPolicy(
                 automaticallyWaitsToMinimizeStalling: true,
                 preferredForwardBufferDuration: 0,
-                canUseNetworkResourcesForLiveStreamingWhilePaused: false
+                canUseNetworkResourcesForLiveStreamingWhilePaused: false,
+                timeOffsetFromLive: .invalid
             )
         }
         return PlaybackLatencyPolicy(
             automaticallyWaitsToMinimizeStalling: !lowLatencyEnabled,
             preferredForwardBufferDuration: lowLatencyEnabled ? 1 : 0,
-            canUseNetworkResourcesForLiveStreamingWhilePaused: false
+            canUseNetworkResourcesForLiveStreamingWhilePaused: false,
+            timeOffsetFromLive: lowLatencyEnabled
+                ? CMTime(seconds: 1.5, preferredTimescale: 600)
+                : .invalid
         )
     }
 
     func apply(to item: AVPlayerItem) {
         item.preferredForwardBufferDuration = preferredForwardBufferDuration
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = canUseNetworkResourcesForLiveStreamingWhilePaused
+        if timeOffsetFromLive.isValid {
+            item.configuredTimeOffsetFromLive = timeOffsetFromLive
+        }
     }
 }
 
@@ -512,6 +520,7 @@ public final class PlayerSurface: NSView {
     fileprivate var onLowLatencyChanged: ((Bool) -> Void)?
     fileprivate var onSubtitleChanged: ((Int) -> Void)?
     fileprivate var onSubtitleAutoOn: (() -> Void)?
+    fileprivate var onUpscalingToggle: (() -> Void)?
     fileprivate var onPictureInPictureToggleRequested: (() -> Void)?
     fileprivate var subtitleInfoProvider: (() -> (titles: [String], selected: Int))?
     fileprivate var pictureInPictureStateProvider: (() -> Bool)?
@@ -526,6 +535,8 @@ public final class PlayerSurface: NSView {
     private var playPauseButton: NSButton?
     private var muteButton: NSButton?
     private var fullScreenButton: NSButton?
+    private var videoOnlyFullscreenButton: NSButton?
+    private var upscalingButton: NSButton?
     private var volumeSlider: PlayerOverlaySlider?
     private var volumeValueLabel: NSTextField?
     private var qualityButton: PlayerOverlayPopUpButton?
@@ -596,6 +607,14 @@ public final class PlayerSurface: NSView {
     fileprivate func reloadSubtitleControl() {
         updateSubtitleControl()
         refreshControlState()
+    }
+
+    fileprivate func updateUpscalingButton(enabled: Bool) {
+        guard let button = upscalingButton else { return }
+        button.title = enabled ? "FX ON" : "FX OFF"
+        button.contentTintColor = enabled
+            ? NSColor(srgbRed: 83.0 / 255.0, green: 252.0 / 255.0, blue: 24.0 / 255.0, alpha: 1)
+            : NSColor.secondaryLabelColor
     }
 
     fileprivate func setPictureInPictureActive(_ active: Bool) {
@@ -978,6 +997,9 @@ public final class PlayerSurface: NSView {
         muteButton?.setAccessibilityLabel(loc("ミュート", "Mute"))
         muteButton?.setAccessibilityHelp(loc("動画音声のミュートを切り替え", "Toggle video mute"))
         muteButton?.toolTip = loc("ミュート", "Mute")
+        videoOnlyFullscreenButton?.setAccessibilityLabel(loc("映像のみ全画面", "Video only fullscreen"))
+        videoOnlyFullscreenButton?.setAccessibilityHelp(loc("チャットとサイドバーを隠して映像だけを表示します", "Hide chat and the sidebar to show only the video"))
+        videoOnlyFullscreenButton?.toolTip = loc("映像のみ全画面", "Video only fullscreen")
         if let fullScreenButton {
             if let image = NSImage(
                 systemSymbolName: "arrow.up.left.and.arrow.down.right",
@@ -1260,9 +1282,50 @@ public final class PlayerSurface: NSView {
         transport.setAccessibilityLabel("再生状態: 一時停止")
         transportLabel = transport
 
+        let videoOnly = PlayerOverlayButton(
+            title: "",
+            target: self,
+            action: #selector(toggleVideoOnlyFullscreen(_:))
+        )
+        videoOnly.bezelStyle = .rounded
+        videoOnly.imagePosition = .imageOnly
+        if let image = NSImage(
+            systemSymbolName: "rectangle.inset.filled",
+            accessibilityDescription: "映像のみ全画面"
+        ) {
+            videoOnly.image = image
+        } else {
+            videoOnly.title = "映像のみ"
+        }
+        videoOnly.setAccessibilityLabel("映像のみ全画面")
+        videoOnly.setAccessibilityHelp("チャットとサイドバーを隠して映像だけを表示します")
+        videoOnly.toolTip = "映像のみ全画面"
+        videoOnly.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        videoOnly.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        videoOnly.onInteractionBegan = { [weak self] in self?.beginPointerInteraction() }
+        videoOnly.onInteractionEnded = { [weak self] in self?.endPointerInteraction() }
+        videoOnlyFullscreenButton = videoOnly
+
+        let upscaling = PlayerOverlayButton(
+            title: "FX OFF",
+            target: self,
+            action: #selector(toggleUpscaling(_:))
+        )
+        upscaling.bezelStyle = .rounded
+        upscaling.font = .systemFont(ofSize: 10, weight: .semibold)
+        upscaling.contentTintColor = NSColor.secondaryLabelColor
+        upscaling.setAccessibilityLabel("MetalFX アップスケール切り替え")
+        upscaling.setAccessibilityHelp("MetalFX Spatial によるアップスケールを切り替えます")
+        upscaling.toolTip = "MetalFX アップスケール"
+        upscaling.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        upscaling.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        upscaling.onInteractionBegan = { [weak self] in self?.beginPointerInteraction() }
+        upscaling.onInteractionEnded = { [weak self] in self?.endPointerInteraction() }
+        upscalingButton = upscaling
+
         let stack = NSStackView(views: [
             playPause, mute, volume, volumeValue, quality, lowLatency, liveEdge,
-            subtitle, pictureInPicture,
+            subtitle, pictureInPicture, upscaling, videoOnly,
         ])
         stack.orientation = .horizontal
         stack.alignment = .centerY
@@ -1397,6 +1460,17 @@ public final class PlayerSurface: NSView {
     @objc private func toggleFullScreen(_ sender: NSButton) {
         revealControls()
         window?.toggleFullScreen(nil)
+    }
+
+    /// Asks the Rust shell to hide the chat and sidebar and show only the video.
+    @objc private func toggleVideoOnlyFullscreen(_ sender: NSButton) {
+        revealControls()
+        videoOnlyFullscreenRequested = true
+    }
+
+    @objc private func toggleUpscaling(_ sender: NSButton) {
+        revealControls()
+        onUpscalingToggle?()
     }
 
     @objc private func selectQuality(_ sender: NSPopUpButton) {
@@ -1774,6 +1848,9 @@ public final class PlayerSession {
     public var onPlaybackSnapshotChanged: ((PlaybackSnapshot) -> Void)?
 
     private let player = AVPlayer()
+    private var metalRenderer: MetalFXRenderer?
+    private var upscalingEnabled = false
+    private var upscalingPowerTimer: Timer?
     private let dvrLoaderPlayer = AVPlayer()
     private let lowLatencyProxy = LowLatencyHLSProxy()
     private enum DVRItemState {
@@ -1935,6 +2012,10 @@ public final class PlayerSession {
         surface.onSubtitleAutoOn = { [weak self] in
             guard let self, !self.isShutdown else { return }
             _ = self.enablePreferredSubtitle()
+        }
+        surface.onUpscalingToggle = { [weak self] in
+            guard let self, !self.isShutdown else { return }
+            self.toggleUpscalingFromOverlay()
         }
         surface.pictureInPictureStateProvider = { [weak self] in
             self?.isPictureInPictureActive ?? false
@@ -2219,6 +2300,7 @@ public final class PlayerSession {
         applyLatencyPolicy(to: item)
         player.pause()
         player.replaceCurrentItem(with: item)
+        updateUpscalingState()
         publishSnapshot()
     }
 
@@ -2517,6 +2599,84 @@ public final class PlayerSession {
         surface.refreshControlState()
     }
 
+    /// Enables GPU upscaling. It runs only while the Mac is on AC power and
+    /// falls back to the normal AVPlayerLayer on battery or in picture in picture.
+    public var isUpscalingActive: Bool {
+        metalRenderer?.isRunning == true
+    }
+
+    public func setUpscaling(_ enabled: Bool) {
+        upscalingEnabled = enabled
+        updateUpscalingState()
+        surface.updateUpscalingButton(enabled: upscalingEnabled)
+    }
+
+    private func toggleUpscalingFromOverlay() {
+        upscalingEnabled.toggle()
+        updateUpscalingState()
+        surface.updateUpscalingButton(enabled: upscalingEnabled)
+        upscalingToggleResult = upscalingEnabled ? 1 : 0
+    }
+
+    private var shouldUpscale: Bool {
+        upscalingEnabled
+            && PowerSource.isOnACPower()
+            && !isPictureInPictureActive
+            && player.currentItem != nil
+    }
+
+    private func updateUpscalingState() {
+        if shouldUpscale {
+            startUpscaling()
+        } else {
+            stopUpscaling()
+        }
+        surface.updateUpscalingButton(enabled: upscalingEnabled)
+        if upscalingEnabled {
+            if upscalingPowerTimer == nil {
+                let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.updateUpscalingState()
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                upscalingPowerTimer = timer
+            }
+        } else {
+            upscalingPowerTimer?.invalidate()
+            upscalingPowerTimer = nil
+        }
+    }
+
+    private func startUpscaling() {
+        guard !isShutdown, let item = player.currentItem else { return }
+        if metalRenderer == nil {
+            metalRenderer = MetalFXRenderer()
+        }
+        guard let renderer = metalRenderer else { return }
+        if renderer.isRunning, renderer.outputItem === item {
+            return
+        }
+        if renderer.isRunning {
+            renderer.stop(item: renderer.outputItem)
+        }
+        renderer.view.frame = surface.bounds
+        renderer.view.autoresizingMask = [.width, .height]
+        if renderer.view.superview == nil {
+            if let first = surface.subviews.first {
+                surface.addSubview(renderer.view, positioned: .below, relativeTo: first)
+            } else {
+                surface.addSubview(renderer.view)
+            }
+        }
+        renderer.start(player: player, item: item, output: makeMetalVideoOutput())
+    }
+
+    private func stopUpscaling() {
+        guard let renderer = metalRenderer else { return }
+        renderer.stop(item: renderer.outputItem)
+    }
+
     /// Applies a resolution/bit-rate cap to the current item. AVPlayer treats
     /// both values as preferences; the bit-rate ceiling is what usually wins.
     public func setQualityCap(_ cap: PlayerQualityCap) {
@@ -2697,10 +2857,12 @@ public final class PlayerSession {
         let delegate = PictureInPictureDelegate()
         delegate.onStart = { [weak self] in
             self?.surface.setPictureInPictureActive(true)
+            self?.updateUpscalingState()
         }
         delegate.onStop = { [weak self] in
             self?.wantsPictureInPicture = false
             self?.surface.setPictureInPictureActive(false)
+            self?.updateUpscalingState()
         }
         delegate.onFailure = { [weak self] message in
             self?.wantsPictureInPicture = false
@@ -2730,6 +2892,9 @@ public final class PlayerSession {
     public func shutdown() {
         guard !isShutdown else { return }
         isShutdown = true
+        stopUpscaling()
+        upscalingPowerTimer?.invalidate()
+        upscalingPowerTimer = nil
         shouldStartWhenReady = false
         shouldStartAtLiveEdge = false
         currentItemAllowsLiveEdgeSeek = false
@@ -2762,6 +2927,7 @@ public final class PlayerSession {
         surface.onLowLatencyChanged = nil
         surface.onSubtitleChanged = nil
         surface.onSubtitleAutoOn = nil
+        surface.onUpscalingToggle = nil
         surface.onPictureInPictureToggleRequested = nil
         surface.subtitleInfoProvider = nil
         surface.pictureInPictureStateProvider = nil
@@ -3255,4 +3421,33 @@ public enum KickPlayerState: Int32 {
     case paused = 4
     case failed = 5
     case playing = 6
+}
+
+
+/// Set by the overlay button and polled by the Rust shell.
+private var videoOnlyFullscreenRequested = false
+
+@_cdecl("kick_video_only_fullscreen_take")
+public func kickVideoOnlyFullscreenTake() -> Int32 {
+    guard Thread.isMainThread else { return 0 }
+    return MainActor.assumeIsolated {
+        guard videoOnlyFullscreenRequested else { return 0 }
+        videoOnlyFullscreenRequested = false
+        return 1
+    }
+}
+
+
+/// -1 = no change, 0 = off, 1 = on. Polled by the Rust shell to persist the
+/// overlay toggle.
+private var upscalingToggleResult: Int32 = -1
+
+@_cdecl("kick_upscaling_toggle_take")
+public func kickUpscalingToggleTake() -> Int32 {
+    guard Thread.isMainThread else { return -1 }
+    return MainActor.assumeIsolated {
+        let value = upscalingToggleResult
+        upscalingToggleResult = -1
+        return value
+    }
 }

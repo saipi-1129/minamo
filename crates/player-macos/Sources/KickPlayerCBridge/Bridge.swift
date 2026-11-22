@@ -215,6 +215,34 @@ public func kickPlayerQualityState(_ rawHandle: UnsafeMutableRawPointer?) -> Int
 }
 
 /// Selects the native overlay language (0 Japanese, 1 English).
+@_cdecl("kick_player_upscaling_active")
+public func kickPlayerUpscalingActive(_ rawHandle: UnsafeMutableRawPointer?) -> Int32 {
+    guard let rawHandle else { return 0 }
+    guard Thread.isMainThread else { return 0 }
+    return onMainActor {
+        Unmanaged<PlayerHandle>.fromOpaque(rawHandle).takeUnretainedValue()
+            .session.isUpscalingActive ? 1 : 0
+    } ?? 0
+}
+
+@_cdecl("kick_power_is_ac")
+public func kickPowerIsAC() -> Int32 {
+    PowerSource.isOnACPower() ? 1 : 0
+}
+
+@_cdecl("kick_player_set_upscaling")
+public func kickPlayerSetUpscaling(_ rawHandle: UnsafeMutableRawPointer?, _ enabled: Int32) -> Int32 {
+    guard let rawHandle else { return -1 }
+    guard Thread.isMainThread else { return -2 }
+
+    return onMainActor {
+        Unmanaged<PlayerHandle>.fromOpaque(rawHandle).takeUnretainedValue().session.setUpscaling(
+            enabled != 0
+        )
+        return 0
+    } ?? -2
+}
+
 @_cdecl("kick_player_set_language")
 public func kickPlayerSetLanguage(_ rawHandle: UnsafeMutableRawPointer?, _ language: Int32) -> Int32 {
     guard let rawHandle else { return -1 }

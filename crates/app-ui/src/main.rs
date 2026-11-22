@@ -39,6 +39,8 @@ use std::{
 };
 use tokio::{runtime::Builder as RuntimeBuilder, sync::oneshot, time::timeout};
 
+mod relay;
+
 thread_local! {
     /// The single embedded chat field owned by the shell. The composer renders a
     /// canvas that positions this native view inside the window.
@@ -76,6 +78,7 @@ const RAID_DISPLAY_OPTIONS: [u64; 4] = [5, 10, 15, 30];
 const CHAT_PENDING_MAX_MESSAGES: usize = 512;
 const CHAT_DELAY_TICK: Duration = Duration::from_millis(100);
 const EMOTE_IMAGE_CACHE_MAX: usize = 256;
+const APP_IMAGE_CACHE_MAX: usize = 160;
 const EMOTE_DIAGNOSTIC_MAX: usize = 32;
 const NAV_MIN_WIDTH: f32 = 152.0;
 const NAV_MAX_WIDTH: f32 = 300.0;
@@ -360,6 +363,27 @@ fn tr(ja: &'static str) -> &'static str {
         "キャンセル" => "Cancel",
         "メッセージを送信する" => "Send a message",
         "アップデート" => "Updates",
+        "アップスケール" => "Upscaling",
+        "低遅延リレー（実験的）" => "Low-latency relay (experimental)",
+        "映像をローカル中継してプレイリストの更新を早めます。既定でオンです。" => {
+            "Relays the playlist locally so it refreshes sooner. On by default."
+        }
+        "再生が不安定な場合はオフにしてください。" => {
+            "Turn it off if playback becomes unstable."
+        }
+        "現在: オフ" => "Now: Off",
+        "現在: 動作中" => "Now: Active",
+        "現在: 停止中（バッテリー駆動）" => "Now: Paused (on battery)",
+        "現在: 停止中（再生開始後またはピクチャ・イン・ピクチャ中）" => {
+            "Now: Paused (after playback starts or in picture in picture)"
+        }
+        "MetalFX Spatial で映像を拡大します。充電中のみ動作し、バッテリー駆動中は自動でオフになります。" => {
+            "Upscales the video with MetalFX Spatial. It runs only on AC power and turns off automatically on battery."
+        }
+        "オン（充電中のみ）" => "On (AC power only)",
+        "1080p などの映像を Retina 解像度に拡大します。GPU 負荷が増えます。" => {
+            "Upscales 1080p video to the Retina resolution. This increases GPU load."
+        }
         "GitHub Releases から最新版を確認します。" => {
             "Check GitHub Releases for the latest version."
         }
@@ -825,6 +849,7 @@ impl gpui::Global for ShellHandle {}
 struct KickShell {
     live_worker: Option<LiveWorker>,
     emote_image_cache: Entity<BoundedEmoteImageCache>,
+    app_image_cache: Entity<BoundedImageCache>,
     emote_diagnostics: EmoteDiagnostics,
     player_host: Rc<RefCell<PlayerHost>>,
     player_monitor_started: bool,
@@ -921,6 +946,8 @@ struct KickShell {
     settings_tab: SettingsTab,
     followed_limit: usize,
     raid_display_seconds: u64,
+    upscale_enabled: bool,
+    relay_enabled: bool,
     update_state: UpdateState,
     update_generation: u64,
     update_started: bool,
@@ -1163,6 +1190,61 @@ impl ImageCache for BoundedEmoteImageCache {
             }
         }
         result
+    }
+}
+
+/// Bounds every `img()` in the shell (thumbnails, avatars, banners). The
+/// default GPUI cache retains images forever, which grows over long sessions.
+#[derive(Default)]
+struct BoundedImageCache {
+    entries: HashMap<Resource, ImageCacheItem>,
+    recency: VecDeque<Resource>,
+}
+
+impl BoundedImageCache {
+    fn new(cx: &mut Context<KickShell>) -> Entity<Self> {
+        let cache = cx.new(|_| Self::default());
+        cx.observe_release(&cache, |_shell, cache, cx| {
+            for (_, item) in std::mem::take(&mut cache.entries) {
+                if let Some(Ok(image)) = item.get() {
+                    cx.drop_image(image, None);
+                }
+            }
+            cache.recency.clear();
+        })
+        .detach();
+        cache
+    }
+
+    fn evict_oldest(&mut self, window: &mut Window, cx: &mut App) {
+        let Some(resource) = self.recency.pop_front() else {
+            return;
+        };
+        if let Some(item) = self.entries.remove(&resource)
+            && let Some(Ok(image)) = item.get()
+        {
+            cx.drop_image(image, Some(window));
+        }
+    }
+}
+
+impl ImageCache for BoundedImageCache {
+    fn load(
+        &mut self,
+        resource: &Resource,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Result<Arc<gpui::RenderImage>, gpui::ImageCacheError>> {
+        if !self.entries.contains_key(resource) {
+            while self.entries.len() >= APP_IMAGE_CACHE_MAX {
+                self.evict_oldest(window, cx);
+            }
+            self.entries
+                .insert(resource.clone(), ImageCacheItem::new(resource, cx));
+        }
+        self.recency.retain(|candidate| candidate != resource);
+        self.recency.push_back(resource.clone());
+        self.entries.get(resource)?.use_image(window)
     }
 }
 
@@ -1546,6 +1628,15 @@ fn load_followed_limit() -> usize {
         .unwrap_or(5)
 }
 
+fn load_relay() -> bool {
+    // On by default; `relay=0` opts out when the relay causes instability.
+    settings_value("relay").as_deref() != Some("0")
+}
+
+fn load_upscale() -> bool {
+    settings_value("upscale").as_deref() == Some("1")
+}
+
 fn load_raid_display_seconds() -> u64 {
     settings_value("raid_display_seconds")
         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -1583,6 +1674,8 @@ fn save_settings(
     danmaku_font_size: f32,
     danmaku_opacity: f32,
     default_quality: PlayerQualityCap,
+    upscale_enabled: bool,
+    relay_enabled: bool,
     followed_limit: usize,
     raid_display_seconds: u64,
 ) {
@@ -1595,7 +1688,7 @@ fn save_settings(
     let _ = fs::write(
         path,
         format!(
-            "chat_delay={}\ndebug={}\nlanguage={}\nnotify={}\ndanmaku={}\ndanmaku_size={}\ndanmaku_opacity={}\nquality={}\nfollowed_limit={}\nraid_display_seconds={}\n",
+            "chat_delay={}\ndebug={}\nlanguage={}\nnotify={}\ndanmaku={}\ndanmaku_size={}\ndanmaku_opacity={}\nquality={}\nupscale={}\nrelay={}\nfollowed_limit={}\nraid_display_seconds={}\n",
             chat_delay_seconds.min(CHAT_DELAY_MAX_SECONDS),
             u8::from(debug_mode),
             match language {
@@ -1611,6 +1704,8 @@ fn save_settings(
             danmaku_font_size,
             danmaku_opacity,
             default_quality.raw_value(),
+            u8::from(upscale_enabled),
+            u8::from(relay_enabled),
             followed_limit.clamp(1, 50),
             raid_display_seconds.clamp(5, 60)
         ),
@@ -1690,6 +1785,12 @@ struct PlayerHost {
     resume_on_return: bool,
     language: Language,
     quality_cap: kick_player_macos::PlayerQualityCap,
+    upscale_enabled: bool,
+    upscaling_active: bool,
+    relay_enabled: bool,
+    relay: Option<relay::LocalRelay>,
+    relay_suppressed: bool,
+    relay_attempt: Option<(Instant, PlaybackSource, Option<String>)>,
     subtitle_count: i32,
     subtitle_index: i32,
     pip_active: bool,
@@ -1698,7 +1799,7 @@ struct PlayerHost {
 }
 
 impl PlayerHost {
-    fn new(quality_cap: PlayerQualityCap) -> Self {
+    fn new(quality_cap: PlayerQualityCap, upscale_enabled: bool, relay_enabled: bool) -> Self {
         Self {
             player: None,
             attached: false,
@@ -1708,6 +1809,12 @@ impl PlayerHost {
             resume_on_return: false,
             language: current_language(),
             quality_cap,
+            upscale_enabled,
+            upscaling_active: false,
+            relay_enabled,
+            relay: None,
+            relay_suppressed: false,
+            relay_attempt: None,
             subtitle_count: 0,
             subtitle_index: 0,
             pip_active: false,
@@ -1728,6 +1835,18 @@ impl PlayerHost {
         self.danmaku_opacity = opacity.clamp(0.2, 1.0);
         if let Some(player) = self.player.as_ref() {
             let _ = player.set_danmaku_config(self.danmaku_font_size, self.danmaku_opacity);
+        }
+    }
+
+    fn set_relay_enabled(&mut self, enabled: bool) {
+        self.relay_enabled = enabled;
+        self.relay_suppressed = false;
+    }
+
+    fn set_upscaling(&mut self, enabled: bool) {
+        self.upscale_enabled = enabled;
+        if let Some(player) = self.player.as_ref() {
+            let _ = player.set_upscaling(enabled);
         }
     }
 
@@ -1794,6 +1913,8 @@ impl PlayerHost {
     }
 
     fn set_channel_loading(&mut self) {
+        self.relay_suppressed = false;
+        self.relay_attempt = None;
         self.shutdown_player();
         self.status = tr("チャンネルの再生ソースを取得中…").to_owned();
     }
@@ -1814,14 +1935,28 @@ impl PlayerHost {
             return;
         };
         let dvr_url = dvr_url.filter(|url| !url.trim().is_empty());
+        let mut live_url = source.url.clone();
+        let mut dvr_proxy = dvr_url.clone();
+        self.relay = None;
+        self.relay_attempt = None;
+        if self.relay_enabled
+            && !self.relay_suppressed
+            && let Some(relay) = relay::LocalRelay::start(&source.url)
+        {
+            live_url = relay.proxy_url(&source.url);
+            dvr_proxy = dvr_url.as_deref().map(|url| relay.proxy_url(url));
+            self.relay = Some(relay);
+            self.relay_attempt = Some((Instant::now(), source.clone(), dvr_url.clone()));
+        }
 
         match Player::new() {
             Ok(player) => {
                 let _ = player.set_vod_mode(false);
                 let _ = player.set_language(self.language == Language::English);
                 let _ = player.set_quality(self.quality_cap);
+                let _ = player.set_upscaling(self.upscale_enabled);
                 let result =
-                    player.play_hls_pair(&source.url, dvr_url.as_deref().unwrap_or_default(), true);
+                    player.play_hls_pair(&live_url, dvr_proxy.as_deref().unwrap_or_default(), true);
                 match result {
                     Ok(()) => {
                         if !self.viewer_visible {
@@ -1858,6 +1993,7 @@ impl PlayerHost {
                 Ok(()) => {
                     let _ = player.set_vod_mode(true);
                     let _ = player.set_quality(self.quality_cap);
+                    let _ = player.set_upscaling(self.upscale_enabled);
                     if !self.viewer_visible {
                         let _ = player.pause();
                         self.resume_on_return = true;
@@ -1941,6 +2077,8 @@ impl PlayerHost {
     }
 
     fn shutdown_player(&mut self) {
+        self.relay = None;
+        self.relay_attempt = None;
         self.detach_view();
         self.player.take();
         self.had_current_item = false;
@@ -2031,10 +2169,44 @@ impl PlayerHost {
     }
 
     fn refresh_snapshot(&mut self) -> PlayerMonitorUpdate {
+        let upscaling_active = self
+            .player
+            .as_ref()
+            .map(Player::upscaling_active)
+            .unwrap_or(false);
+        let upscaling_changed = upscaling_active != self.upscaling_active;
+        self.upscaling_active = upscaling_active;
+        let update = self.refresh_snapshot_inner();
+        if upscaling_changed && matches!(update, PlayerMonitorUpdate::Unchanged) {
+            PlayerMonitorUpdate::Changed
+        } else {
+            update
+        }
+    }
+
+    fn refresh_snapshot_inner(&mut self) -> PlayerMonitorUpdate {
         let Some(snapshot_result) = self.player.as_ref().map(Player::snapshot) else {
             self.refresh_track_state();
             return PlayerMonitorUpdate::Unchanged;
         };
+        if let Ok(snapshot) = &snapshot_result {
+            if snapshot.state == PlayerState::Playing {
+                self.relay_attempt = None;
+            } else if let Some((started, source, dvr)) = self.relay_attempt.clone()
+                && matches!(
+                    snapshot.state,
+                    PlayerState::Failed | PlayerState::Idle | PlayerState::Loading
+                )
+                && started.elapsed() > Duration::from_secs(8)
+            {
+                // The relay did not reach playback; retry directly once.
+                self.relay_suppressed = true;
+                self.relay = None;
+                self.relay_attempt = None;
+                self.set_playback_source(Some(source), dvr, true);
+                return PlayerMonitorUpdate::Changed;
+            }
+        }
         let mut ended = false;
         let status = match snapshot_result {
             Ok(snapshot) => {
@@ -2129,8 +2301,13 @@ impl KickShell {
         let mut this = Self {
             live_worker: LiveWorker::new().ok(),
             emote_image_cache,
+            app_image_cache: BoundedImageCache::new(cx),
             emote_diagnostics,
-            player_host: Rc::new(RefCell::new(PlayerHost::new(default_quality))),
+            player_host: Rc::new(RefCell::new(PlayerHost::new(
+                default_quality,
+                load_upscale(),
+                load_relay(),
+            ))),
             player_monitor_started: false,
             streams,
             chat_messages,
@@ -2227,6 +2404,8 @@ impl KickShell {
             settings_tab: SettingsTab::General,
             followed_limit: load_followed_limit(),
             raid_display_seconds: load_raid_display_seconds(),
+            upscale_enabled: load_upscale(),
+            relay_enabled: load_relay(),
             update_state: UpdateState::Idle,
             update_generation: 0,
             update_started: false,
@@ -2615,6 +2794,15 @@ impl KickShell {
                     .timer(Duration::from_millis(500))
                     .await;
                 let update = this.update(cx, |view, cx| {
+                    if kick_player_macos::take_video_only_fullscreen_request() {
+                        view.toggle_video_fullscreen(cx);
+                    }
+                    if let Some(enabled) = kick_player_macos::take_upscaling_toggle() {
+                        view.upscale_enabled = enabled;
+                        view.player_host.borrow_mut().set_upscaling(enabled);
+                        view.save_current_settings();
+                        cx.notify();
+                    }
                     let monitor_update = view.player_host.borrow_mut().refresh_snapshot();
                     match monitor_update {
                         PlayerMonitorUpdate::Unchanged => {}
@@ -4007,6 +4195,15 @@ impl KickShell {
             loop {
                 cx.background_executor().timer(CHAT_UI_BATCH_INTERVAL).await;
                 let update = this.update(cx, |view, cx| {
+                    if kick_player_macos::take_video_only_fullscreen_request() {
+                        view.toggle_video_fullscreen(cx);
+                    }
+                    if let Some(enabled) = kick_player_macos::take_upscaling_toggle() {
+                        view.upscale_enabled = enabled;
+                        view.player_host.borrow_mut().set_upscaling(enabled);
+                        view.save_current_settings();
+                        cx.notify();
+                    }
                     let input_dirty = view.chat_input_host.borrow().take_dirty();
                     let input_submitted = view.chat_input_host.borrow().take_submit();
                     if input_dirty {
@@ -4237,6 +4434,8 @@ impl KickShell {
             self.danmaku_font_size,
             self.danmaku_opacity,
             self.default_quality,
+            self.upscale_enabled,
+            self.relay_enabled,
             self.followed_limit,
             self.raid_display_seconds,
         );
@@ -4248,6 +4447,26 @@ impl KickShell {
             return;
         }
         self.raid_display_seconds = seconds;
+        self.save_current_settings();
+        cx.notify();
+    }
+
+    fn set_relay(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.relay_enabled == enabled {
+            return;
+        }
+        self.relay_enabled = enabled;
+        self.player_host.borrow_mut().set_relay_enabled(enabled);
+        self.save_current_settings();
+        cx.notify();
+    }
+
+    fn set_upscale(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.upscale_enabled == enabled {
+            return;
+        }
+        self.upscale_enabled = enabled;
+        self.player_host.borrow_mut().set_upscaling(enabled);
         self.save_current_settings();
         cx.notify();
     }
@@ -6982,6 +7201,15 @@ impl Render for KickShell {
                 self.danmaku_font_size,
                 self.danmaku_opacity,
                 self.default_quality,
+                self.upscale_enabled,
+                self.player_host
+                    .borrow()
+                    .player
+                    .as_ref()
+                    .map(|player| player.upscaling_active())
+                    .unwrap_or(false),
+                kick_player_macos::is_on_ac_power(),
+                self.relay_enabled,
                 self.notification_permission,
                 self.notification_notice.as_deref(),
                 self.settings_tab,
@@ -7202,7 +7430,7 @@ impl Render for KickShell {
                     ),
             );
         }
-        shell
+        let root = shell
             .on_click(cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
                 if this.suppress_menu_close {
                     this.suppress_menu_close = false;
@@ -7383,7 +7611,10 @@ impl Render for KickShell {
                     &self.login_input_focus,
                     cx,
                 ))
-            })
+            });
+        gpui::image_cache(self.app_image_cache.clone())
+            .size_full()
+            .child(root)
     }
 }
 
@@ -9517,6 +9748,10 @@ fn settings_page(
     danmaku_font_size: f32,
     danmaku_opacity: f32,
     default_quality: PlayerQualityCap,
+    upscale_enabled: bool,
+    upscaling_active: bool,
+    upscaling_on_ac: bool,
+    relay_enabled: bool,
     notification_permission: i32,
     notification_notice: Option<&str>,
     settings_tab: SettingsTab,
@@ -9857,6 +10092,89 @@ fn settings_page(
                             .text_size(px(12.0))
                             .text_color(rgb(MUTED))
                             .child(tr("再生中の画質はプレイヤーの画質ボタンで変更できます。")),
+                    ),
+                ))
+                .when(settings_tab == SettingsTab::Video, |page| page.child(
+                    settings_section(
+                        tr("アップスケール"),
+                        tr("MetalFX Spatial で映像を拡大します。充電中のみ動作し、バッテリー駆動中は自動でオフになります。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(settings_toggle(
+                                "upscale-off",
+                                tr("オフ"),
+                                !upscale_enabled,
+                                cx,
+                                |this, cx| this.set_upscale(false, cx),
+                            ))
+                            .child(settings_toggle(
+                                "upscale-on",
+                                tr("オン（充電中のみ）"),
+                                upscale_enabled,
+                                cx,
+                                |this, cx| this.set_upscale(true, cx),
+                            )),
+                    )
+                    .child({
+                        let (status, color) = if !upscale_enabled {
+                            (tr("現在: オフ"), MUTED)
+                        } else if upscaling_active {
+                            (tr("現在: 動作中"), ACCENT)
+                        } else if !upscaling_on_ac {
+                            (tr("現在: 停止中（バッテリー駆動）"), MUTED)
+                        } else {
+                            (tr("現在: 停止中（再生開始後またはピクチャ・イン・ピクチャ中）"), MUTED)
+                        };
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_size(px(12.0))
+                            .text_color(rgb(color))
+                            .child("●")
+                            .child(status)
+                    })
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(MUTED))
+                            .child(tr("1080p などの映像を Retina 解像度に拡大します。GPU 負荷が増えます。")),
+                    ),
+                ))
+                .when(settings_tab == SettingsTab::Video, |page| page.child(
+                    settings_section(
+                        tr("低遅延リレー（実験的）"),
+                        tr("映像をローカル中継してプレイリストの更新を早めます。既定でオンです。"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(settings_toggle(
+                                "relay-off",
+                                tr("オフ"),
+                                !relay_enabled,
+                                cx,
+                                |this, cx| this.set_relay(false, cx),
+                            ))
+                            .child(settings_toggle(
+                                "relay-on",
+                                tr("オン"),
+                                relay_enabled,
+                                cx,
+                                |this, cx| this.set_relay(true, cx),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(MUTED))
+                            .child(tr("再生が不安定な場合はオフにしてください。")),
                     ),
                 ))
                 .when(settings_tab == SettingsTab::Video, |page| page.child(

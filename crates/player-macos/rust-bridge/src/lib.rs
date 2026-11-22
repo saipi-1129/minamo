@@ -32,7 +32,12 @@ unsafe extern "C" {
     fn kick_player_set_quality(handle: *mut c_void, cap: i32) -> i32;
     fn kick_player_set_vod_mode(handle: *mut c_void, enabled: i32) -> i32;
     fn kick_player_set_language(handle: *mut c_void, language: i32) -> i32;
+    fn kick_player_set_upscaling(handle: *mut c_void, enabled: i32) -> i32;
+    fn kick_player_upscaling_active(handle: *mut c_void) -> i32;
+    fn kick_upscaling_toggle_take() -> i32;
+    fn kick_power_is_ac() -> i32;
     fn kick_apply_appearance_icon();
+    fn kick_video_only_fullscreen_take() -> i32;
     fn kick_notifications_request_authorization() -> i32;
     fn kick_notifications_status() -> i32;
     fn kick_notifications_post(
@@ -233,8 +238,28 @@ pub struct Player {
     _main_thread_affinity: PhantomData<Rc<()>>,
 }
 
+/// Returns true once after the native overlay asks for the video-only view.
+pub fn take_video_only_fullscreen_request() -> bool {
+    unsafe { kick_video_only_fullscreen_take() == 1 }
+}
+
 /// Applies the light or dark Dock icon for the current system appearance and
 /// keeps it in sync when the appearance changes. Call from the AppKit main thread.
+/// Returns the overlay toggle result: `Some(true)` on, `Some(false)` off,
+/// `None` when the user did not touch the MetalFX button.
+pub fn take_upscaling_toggle() -> Option<bool> {
+    match unsafe { kick_upscaling_toggle_take() } {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether the Mac is currently running from the power adapter.
+pub fn is_on_ac_power() -> bool {
+    unsafe { kick_power_is_ac() == 1 }
+}
+
 pub fn apply_appearance_icon() {
     unsafe { kick_apply_appearance_icon() };
 }
@@ -386,6 +411,20 @@ impl Player {
             -1 => Err(PlayerError::InvalidArgument),
             -2 => Err(PlayerError::WrongThread),
             value => PlayerQualityCap::from_raw(value).ok_or(PlayerError::InvalidSnapshot),
+        }
+    }
+
+    /// Whether MetalFX upscaling is rendering right now.
+    pub fn upscaling_active(&self) -> bool {
+        unsafe { kick_player_upscaling_active(self.handle.as_ptr()) == 1 }
+    }
+
+    /// Enables MetalFX spatial upscaling while the Mac is on AC power.
+    pub fn set_upscaling(&self, enabled: bool) -> Result<(), PlayerError> {
+        match unsafe { kick_player_set_upscaling(self.handle.as_ptr(), i32::from(enabled)) } {
+            0 => Ok(()),
+            -2 => Err(PlayerError::WrongThread),
+            _ => Err(PlayerError::InvalidArgument),
         }
     }
 
