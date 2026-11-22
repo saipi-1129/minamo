@@ -2607,7 +2607,7 @@ version = "0.1.0"
 
 [[package]]
 name = "kick-gpui-poc"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "block2 0.6.2",
  "gpui",

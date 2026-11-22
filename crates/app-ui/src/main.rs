@@ -78,7 +78,7 @@ const RAID_DISPLAY_OPTIONS: [u64; 4] = [5, 10, 15, 30];
 const CHAT_PENDING_MAX_MESSAGES: usize = 512;
 const CHAT_DELAY_TICK: Duration = Duration::from_millis(100);
 const EMOTE_IMAGE_CACHE_MAX: usize = 256;
-const APP_IMAGE_CACHE_MAX: usize = 160;
+const APP_IMAGE_CACHE_MAX: usize = 64;
 const EMOTE_DIAGNOSTIC_MAX: usize = 32;
 const NAV_MIN_WIDTH: f32 = 152.0;
 const NAV_MAX_WIDTH: f32 = 300.0;
@@ -1147,6 +1147,15 @@ impl BoundedEmoteImageCache {
             cx.drop_image(image, Some(window));
         }
     }
+
+    fn clear(&mut self, cx: &mut App) {
+        for (_, item) in std::mem::take(&mut self.entries) {
+            if let Some(Ok(image)) = item.get() {
+                cx.drop_image(image, None);
+            }
+        }
+        self.recency.clear();
+    }
 }
 
 impl ImageCache for BoundedEmoteImageCache {
@@ -1225,6 +1234,15 @@ impl BoundedImageCache {
         {
             cx.drop_image(image, Some(window));
         }
+    }
+
+    fn clear(&mut self, cx: &mut App) {
+        for (_, item) in std::mem::take(&mut self.entries) {
+            if let Some(Ok(image)) = item.get() {
+                cx.drop_image(image, None);
+            }
+        }
+        self.recency.clear();
     }
 }
 
@@ -1626,6 +1644,23 @@ fn load_followed_limit() -> usize {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .map(|value| value.clamp(1, 50))
         .unwrap_or(5)
+}
+
+/// Returns free pages from the malloc zones after a view switch. The allocator
+/// otherwise keeps them dirty, which inflates the physical footprint.
+fn relieve_malloc_pressure() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            unsafe {
+                malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+            }
+        });
+    }
 }
 
 fn load_relay() -> bool {
@@ -3269,6 +3304,15 @@ impl KickShell {
         cx.notify();
     }
 
+    /// Drops the feed thumbnails and the previous channel's emotes when the
+    /// view switches, so hidden images do not stay resident.
+    fn clear_transient_image_caches(&mut self, cx: &mut Context<Self>) {
+        let image_cache = self.app_image_cache.clone();
+        image_cache.update(cx, |cache, cx| cache.clear(cx));
+        let emote_cache = self.emote_image_cache.clone();
+        emote_cache.update(cx, |cache, cx| cache.clear(cx));
+    }
+
     fn open_channel_page(&mut self, cx: &mut Context<Self>) {
         self.set_theater_mode(false);
         self.channel_page_forward = false;
@@ -3498,6 +3542,8 @@ impl KickShell {
             return;
         }
 
+        self.clear_transient_image_caches(cx);
+        relieve_malloc_pressure();
         self.selected_channel_slug = channel_slug.to_owned();
         self.selected_channel_id = None;
         self.selected_channel_details = SelectedChannelDetails::default();
