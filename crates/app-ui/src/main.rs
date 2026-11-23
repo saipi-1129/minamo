@@ -13088,7 +13088,7 @@ fn channel_info_row(
             div()
                 .text_size(px(14.0))
                 .text_color(rgb(SUBTLE))
-                .truncate()
+                .line_clamp(3)
                 .child(title),
         )
         .child(meta);
