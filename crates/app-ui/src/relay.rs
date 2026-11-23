@@ -7,8 +7,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::collections::HashMap;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
@@ -20,6 +21,11 @@ pub struct LocalRelay {
     handle: Option<JoinHandle<()>>,
 }
 
+/// Last successfully rewritten playlist per URL. On a flaky network the relay
+/// keeps serving it while the upstream fetch fails, so AVPlayer does not see a
+/// hard error mid-playback.
+type PlaylistCache = Arc<Mutex<HashMap<String, String>>>;
+
 impl LocalRelay {
     pub fn start(master_url: &str) -> Option<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
@@ -27,6 +33,7 @@ impl LocalRelay {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         let master = master_url.to_owned();
+        let cache: PlaylistCache = Arc::new(Mutex::new(HashMap::new()));
         let handle = thread::spawn(move || {
             for incoming in listener.incoming() {
                 if stop_for_thread.load(Ordering::Relaxed) {
@@ -34,8 +41,9 @@ impl LocalRelay {
                 }
                 let Ok(stream) = incoming else { continue };
                 let master = master.clone();
+                let cache = cache.clone();
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, &master);
+                    let _ = handle_connection(stream, &master, &cache);
                 });
             }
         });
@@ -67,7 +75,11 @@ impl Drop for LocalRelay {
     }
 }
 
-fn handle_connection(stream: TcpStream, master_url: &str) -> std::io::Result<()> {
+fn handle_connection(
+    stream: TcpStream,
+    master_url: &str,
+    cache: &PlaylistCache,
+) -> std::io::Result<()> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let clone = stream.try_clone()?;
     let mut reader = BufReader::new(clone);
@@ -115,11 +127,37 @@ fn handle_connection(stream: TcpStream, master_url: &str) -> std::io::Result<()>
     if let Some(range) = range.as_deref() {
         request = request.header(reqwest::header::RANGE, range);
     }
+    let is_playlist_url = url.contains(".m3u8");
     let response = match request.send() {
         Ok(response) => response,
-        Err(_) => return write_response(&stream, 502, "text/plain", b"upstream", None),
+        Err(_) => {
+            if is_playlist_url
+                && let Some(cached) = cache.lock().ok().and_then(|cache| cache.get(&url).cloned())
+            {
+                return write_response(
+                    &stream,
+                    200,
+                    "application/vnd.apple.mpegurl",
+                    cached.as_bytes(),
+                    None,
+                );
+            }
+            return write_response(&stream, 502, "text/plain", b"upstream", None);
+        }
     };
     let status = response.status().as_u16();
+    if is_playlist_url && !(200..300).contains(&status) {
+        if let Some(cached) = cache.lock().ok().and_then(|cache| cache.get(&url).cloned()) {
+            return write_response(
+                &stream,
+                200,
+                "application/vnd.apple.mpegurl",
+                cached.as_bytes(),
+                None,
+            );
+        }
+        return write_response(&stream, status, "text/plain", b"upstream", None);
+    }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -139,6 +177,9 @@ fn handle_connection(stream: TcpStream, master_url: &str) -> std::io::Result<()>
         let text = String::from_utf8_lossy(&body);
         let base = reqwest::Url::parse(&url).ok();
         let rewritten = rewrite_playlist(&text, base.as_ref());
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(url.clone(), rewritten.clone());
+        }
         return write_response(
             &stream,
             200,

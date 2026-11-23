@@ -1826,6 +1826,11 @@ struct PlayerHost {
     relay: Option<relay::LocalRelay>,
     relay_suppressed: bool,
     relay_attempt: Option<(Instant, PlaybackSource, Option<String>)>,
+    source_for_restart: Option<(PlaybackSource, Option<String>)>,
+    waiting_since: Option<Instant>,
+    recovery_requested: bool,
+    last_recovery_at: Option<Instant>,
+    restart_attempts: u8,
     subtitle_count: i32,
     subtitle_index: i32,
     pip_active: bool,
@@ -1850,6 +1855,11 @@ impl PlayerHost {
             relay: None,
             relay_suppressed: false,
             relay_attempt: None,
+            source_for_restart: None,
+            waiting_since: None,
+            recovery_requested: false,
+            last_recovery_at: None,
+            restart_attempts: 0,
             subtitle_count: 0,
             subtitle_index: 0,
             pip_active: false,
@@ -1970,6 +1980,7 @@ impl PlayerHost {
             return;
         };
         let dvr_url = dvr_url.filter(|url| !url.trim().is_empty());
+        self.source_for_restart = Some((source.clone(), dvr_url.clone()));
         let mut live_url = source.url.clone();
         let mut dvr_proxy = dvr_url.clone();
         self.relay = None;
@@ -2219,6 +2230,41 @@ impl PlayerHost {
         }
     }
 
+    fn request_recovery(&mut self, now: Instant) {
+        if self.recovery_requested {
+            return;
+        }
+        if let Some(last) = self.last_recovery_at
+            && now.duration_since(last) < Duration::from_secs(5)
+        {
+            return;
+        }
+        self.recovery_requested = true;
+        self.last_recovery_at = Some(now);
+        self.waiting_since = None;
+    }
+
+    fn take_recovery_request(&mut self) -> bool {
+        let requested = self.recovery_requested;
+        self.recovery_requested = false;
+        requested
+    }
+
+    /// Restarts with the stored source and bypasses the relay. Returns false
+    /// after two attempts so the caller can re-fetch the playback URL.
+    fn restart_current(&mut self) -> bool {
+        if self.restart_attempts >= 2 {
+            return false;
+        }
+        let Some((source, dvr)) = self.source_for_restart.clone() else {
+            return false;
+        };
+        self.restart_attempts += 1;
+        self.relay_suppressed = true;
+        self.set_playback_source(Some(source), dvr, true);
+        true
+    }
+
     fn refresh_snapshot_inner(&mut self) -> PlayerMonitorUpdate {
         let Some(snapshot_result) = self.player.as_ref().map(Player::snapshot) else {
             self.refresh_track_state();
@@ -2227,6 +2273,8 @@ impl PlayerHost {
         if let Ok(snapshot) = &snapshot_result {
             if snapshot.state == PlayerState::Playing {
                 self.relay_attempt = None;
+                self.waiting_since = None;
+                self.restart_attempts = 0;
             } else if let Some((started, source, dvr)) = self.relay_attempt.clone()
                 && matches!(
                     snapshot.state,
@@ -2240,6 +2288,23 @@ impl PlayerHost {
                 self.relay_attempt = None;
                 self.set_playback_source(Some(source), dvr, true);
                 return PlayerMonitorUpdate::Changed;
+            }
+            let now = Instant::now();
+            if matches!(
+                snapshot.transport_status,
+                PlayerTransportStatus::Waiting
+            ) {
+                let since = *self.waiting_since.get_or_insert(now);
+                if now.duration_since(since) > Duration::from_secs(10) {
+                    self.request_recovery(now);
+                }
+            } else {
+                self.waiting_since = None;
+            }
+            if snapshot.state == PlayerState::Failed
+                || snapshot.item_status == PlayerItemStatus::Failed
+            {
+                self.request_recovery(now);
             }
         }
         let mut ended = false;
@@ -2829,6 +2894,14 @@ impl KickShell {
                     .timer(Duration::from_millis(500))
                     .await;
                 let update = this.update(cx, |view, cx| {
+                    if view.player_host.borrow_mut().take_recovery_request() {
+                        let restarted = view.player_host.borrow_mut().restart_current();
+                        if !restarted {
+                            view.retry_selected_channel(cx);
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if kick_player_macos::take_video_only_fullscreen_request() {
                         view.toggle_video_fullscreen(cx);
                     }

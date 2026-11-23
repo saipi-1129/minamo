@@ -619,6 +619,18 @@ public final class PlayerSurface: NSView {
 
     fileprivate func setPictureInPictureActive(_ active: Bool) {
         updatePictureInPictureControl(active: active)
+        if active {
+            hideControlsTimer?.invalidate()
+            hideControlsTimer = nil
+            controlsAreVisible = false
+            controlsBackground?.isHidden = true
+        } else {
+            // PiP takes the player layer out of the window; restore pointer
+            // tracking so the overlay can appear again after it closes.
+            window?.acceptsMouseMovedEvents = true
+            updateTrackingAreas()
+            revealControls()
+        }
     }
 
     /// Surfaces a PiP failure in the transport label, which is the native
@@ -692,6 +704,9 @@ public final class PlayerSurface: NSView {
             pointerInteractionIsActive = false
             controlsAreVisible = false
             controlsBackground?.isHidden = true
+        } else {
+            window?.acceptsMouseMovedEvents = true
+            updateTrackingAreas()
         }
         refreshControlState()
     }
